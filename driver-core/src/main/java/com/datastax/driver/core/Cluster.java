@@ -6,6 +6,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+
 import org.apache.cassandra.utils.MD5Digest;
 import org.apache.cassandra.transport.Event;
 import org.apache.cassandra.transport.Message;
@@ -18,9 +20,6 @@ import com.datastax.driver.core.policies.*;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.log4j.ConsoleAppender;
-import org.apache.log4j.Level;
-import org.apache.log4j.PatternLayout;
 
 /**
  * Informations and known state of a Cassandra cluster.
@@ -43,14 +42,6 @@ import org.apache.log4j.PatternLayout;
 public class Cluster {
 
     private static final Logger logger = LoggerFactory.getLogger(Cluster.class);
-
-    static {
-        org.apache.log4j.Logger rootLogger = org.apache.log4j.Logger.getRootLogger();
-        if (!rootLogger.getAllAppenders().hasMoreElements()) {
-            rootLogger.setLevel(Level.INFO);
-            rootLogger.addAppender(new ConsoleAppender(new PatternLayout("%-5p [%t]: %m%n")));
-        }
-    }
 
     final Manager manager;
 
@@ -452,6 +443,10 @@ public class Cluster {
         }
     }
 
+    private static ThreadFactory threadFactory(String nameFormat) {
+        return new ThreadFactoryBuilder().setNameFormat(nameFormat).build();
+    }
+
     /**
      * The sessions and hosts managed by this a Cluster instance.
      * <p>
@@ -474,10 +469,10 @@ public class Cluster {
 
         final ConvictionPolicy.Factory convictionPolicyFactory = new ConvictionPolicy.Simple.Factory();
 
-        final ScheduledExecutorService reconnectionExecutor = Executors.newScheduledThreadPool(2, new NamedThreadFactory("Reconnection"));
-        final ScheduledExecutorService scheduledTasksExecutor = Executors.newScheduledThreadPool(1, new NamedThreadFactory("Scheduled Tasks"));
+        final ScheduledExecutorService reconnectionExecutor = Executors.newScheduledThreadPool(2, threadFactory("Reconnection-%d"));
+        final ScheduledExecutorService scheduledTasksExecutor = Executors.newScheduledThreadPool(1, threadFactory("Scheduled Tasks-%d"));
 
-        final ExecutorService executor = Executors.newCachedThreadPool(new NamedThreadFactory("Cassandra Java Driver worker"));
+        final ExecutorService executor = Executors.newCachedThreadPool(threadFactory("Cassandra Java Driver worker-%d"));
 
         final AtomicBoolean isShutdown = new AtomicBoolean(false);
 
@@ -502,7 +497,12 @@ public class Cluster {
             this.metrics = new Metrics(this);
             this.configuration.register(this);
 
-            this.controlConnection.connect();
+            try {
+                this.controlConnection.connect();
+            } catch (NoHostAvailableException e) {
+                shutdown();
+                throw e;
+            }
         }
 
         // This is separated from the constructor because this reference the
@@ -536,6 +536,10 @@ public class Cluster {
             reconnectionExecutor.shutdownNow();
             scheduledTasksExecutor.shutdownNow();
             executor.shutdownNow();
+            connectionFactory.shutdown();
+
+            if (metrics != null)
+                metrics.shutdown();
         }
 
         public void onUp(Host host) {
@@ -546,7 +550,12 @@ public class Cluster {
             if (scheduledAttempt != null)
                 scheduledAttempt.cancel(false);
 
-            prepareAllQueries(host);
+            try {
+                prepareAllQueries(host);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupted();
+                // Don't propagate because we don't want to prevent other listener to run
+            }
 
             controlConnection.onUp(host);
             for (Session s : sessions)
@@ -563,7 +572,7 @@ public class Cluster {
             logger.debug("{} is down, scheduling connection retries", host);
             new AbstractReconnectionHandler(reconnectionExecutor, configuration.getPolicies().getReconnectionPolicy().newSchedule(), host.reconnectionAttempt) {
 
-                protected Connection tryReconnect() throws ConnectionException {
+                protected Connection tryReconnect() throws ConnectionException, InterruptedException {
                     return connectionFactory.open(host);
                 }
 
@@ -588,7 +597,14 @@ public class Cluster {
 
         public void onAdd(Host host) {
             logger.trace("Adding new host {}", host);
-            prepareAllQueries(host);
+
+            try {
+                prepareAllQueries(host);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupted();
+                // Don't propagate because we don't want to prevent other listener to run
+            }
+
             controlConnection.onAdd(host);
             for (Session s : sessions)
                 s.manager.onAdd(host);
@@ -628,18 +644,26 @@ public class Cluster {
         }
 
         // Prepare a query on all nodes
-        public void prepare(MD5Digest digest, String query, InetAddress toExclude) {
+        // Note that this *assumes* the query is valid.
+        public void prepare(MD5Digest digest, String query, InetAddress toExclude) throws InterruptedException {
             preparedQueries.put(digest, query);
             for (Session s : sessions)
                 s.manager.prepare(query, toExclude);
         }
 
-        private void prepareAllQueries(Host host) {
+        private void prepareAllQueries(Host host) throws InterruptedException {
             if (preparedQueries.isEmpty())
                 return;
 
             try {
                 Connection connection = connectionFactory.open(host);
+
+                try {
+                    ControlConnection.waitForSchemaAgreement(connection, metadata);
+                } catch (ExecutionException e) {
+                    // As below, just move on
+                }
+
                 List<Connection.Future> futures = new ArrayList<Connection.Future>(preparedQueries.size());
                 for (String query : preparedQueries.values()) {
                     futures.add(connection.write(new PrepareMessage(query)));
@@ -647,9 +671,10 @@ public class Cluster {
                 for (Connection.Future future : futures) {
                     try {
                         future.get();
-                    } catch (InterruptedException e) {
-                        logger.debug("Interupted while preparing queries on new/newly up host", e);
                     } catch (ExecutionException e) {
+                        // This "might" happen if we drop a CF but haven't removed it's prepared queries (which we don't do
+                        // currently). It's not a big deal however as if it's a more serious problem it'll show up later when
+                        // the query is tried for execution.
                         logger.debug("Unexpected error while preparing queries on new/newly up host", e);
                     }
                 }
@@ -666,7 +691,11 @@ public class Cluster {
             logger.trace("Submitting schema refresh");
             executor.submit(new Runnable() {
                 public void run() {
-                    controlConnection.refreshSchema(keyspace, table);
+                    try {
+                        controlConnection.refreshSchema(keyspace, table);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
             });
         }
@@ -683,7 +712,7 @@ public class Cluster {
                         ControlConnection.waitForSchemaAgreement(connection, metadata);
                         ControlConnection.refreshSchema(connection, keyspace, table, Cluster.Manager.this);
                     } catch (Exception e) {
-                        logger.error("Error during schema refresh ({}). The schema from Cluster.getMetadata() migth appear stale. Asynchronously submitting job to fix.", e.getMessage());
+                        logger.error("Error during schema refresh ({}). The schema from Cluster.getMetadata() might appear stale. Asynchronously submitting job to fix.", e.getMessage());
                         submitSchemaRefresh(keyspace, table);
                     } finally {
                         // Always sets the result

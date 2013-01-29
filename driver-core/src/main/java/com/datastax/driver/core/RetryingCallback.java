@@ -9,6 +9,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutionException;
 
+import com.google.common.util.concurrent.Uninterruptibles;
+
 import com.datastax.driver.core.policies.RetryPolicy;
 import com.datastax.driver.core.exceptions.*;
 
@@ -42,6 +44,7 @@ class RetryingCallback implements Connection.ResponseCallback {
     private final TimerContext timerContext;
 
     private final Iterator<Host> queryPlan;
+    private final Query query;
     private volatile Host current;
     private volatile HostConnectionPool currentPool;
 
@@ -55,6 +58,7 @@ class RetryingCallback implements Connection.ResponseCallback {
         this.callback = callback;
 
         this.queryPlan = manager.loadBalancer.newQueryPlan(query);
+        this.query = query;
 
         this.timerContext = manager.configuration().isMetricsEnabled()
                           ? metrics().getRequestsTimer().time()
@@ -186,7 +190,9 @@ class RetryingCallback implements Connection.ResponseCallback {
                 case ERROR:
                     ErrorMessage err = (ErrorMessage)response;
                     RetryPolicy.RetryDecision retry = null;
-                    RetryPolicy retryPolicy = manager.configuration().getPolicies().getRetryPolicy();
+                    RetryPolicy retryPolicy = query.getRetryPolicy() == null
+                                            ? manager.configuration().getPolicies().getRetryPolicy()
+                                            : query.getRetryPolicy();
                     switch (err.error.code()) {
                         case READ_TIMEOUT:
                             assert err.error instanceof ReadTimeoutException;
@@ -195,7 +201,7 @@ class RetryingCallback implements Connection.ResponseCallback {
 
                             ReadTimeoutException rte = (ReadTimeoutException)err.error;
                             ConsistencyLevel rcl = ConsistencyLevel.from(rte.consistency);
-                            retry = retryPolicy.onReadTimeout(rcl, rte.blockFor, rte.received, rte.dataPresent, queryRetries);
+                            retry = retryPolicy.onReadTimeout(query, rcl, rte.blockFor, rte.received, rte.dataPresent, queryRetries);
                             break;
                         case WRITE_TIMEOUT:
                             assert err.error instanceof WriteTimeoutException;
@@ -204,7 +210,7 @@ class RetryingCallback implements Connection.ResponseCallback {
 
                             WriteTimeoutException wte = (WriteTimeoutException)err.error;
                             ConsistencyLevel wcl = ConsistencyLevel.from(wte.consistency);
-                            retry = retryPolicy.onWriteTimeout(wcl, WriteType.from(wte.writeType), wte.blockFor, wte.received, queryRetries);
+                            retry = retryPolicy.onWriteTimeout(query, wcl, WriteType.from(wte.writeType), wte.blockFor, wte.received, queryRetries);
                             break;
                         case UNAVAILABLE:
                             assert err.error instanceof UnavailableException;
@@ -213,7 +219,7 @@ class RetryingCallback implements Connection.ResponseCallback {
 
                             UnavailableException ue = (UnavailableException)err.error;
                             ConsistencyLevel ucl = ConsistencyLevel.from(ue.consistency);
-                            retry = retryPolicy.onUnavailable(ucl, ue.required, ue.alive, queryRetries);
+                            retry = retryPolicy.onUnavailable(query, ucl, ue.required, ue.alive, queryRetries);
                             break;
                         case OVERLOADED:
                             // Try another node
@@ -242,13 +248,9 @@ class RetryingCallback implements Connection.ResponseCallback {
                             }
 
                             try {
-                                Message.Response prepareResponse = connection.write(new PrepareMessage(toPrepare)).get();
+                                Message.Response prepareResponse = Uninterruptibles.getUninterruptibly(connection.write(new PrepareMessage(toPrepare)));
                                 // TODO check return ?
                                 retry = RetryPolicy.RetryDecision.retry(null);
-                            } catch (InterruptedException e) {
-                                logError(connection.address, "Interrupted while preparing query to execute");
-                                retry(false, null);
-                                return;
                             } catch (ExecutionException e) {
                                 logError(connection.address, "Unexpected problem while preparing query to execute: " + e.getCause().getMessage());
                                 retry(false, null);

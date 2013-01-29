@@ -13,12 +13,16 @@
     <module>driver-examples</module>
     <module>driver-mapper</module>
   </modules>
+  
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
 
   <dependencies>
     <dependency>
       <groupId>org.apache.cassandra</groupId>
       <artifactId>cassandra-all</artifactId>
-      <version>1.2.0-beta3</version>
+      <version>1.2.0</version>
     </dependency>
 
     <dependency>
@@ -31,6 +35,7 @@
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-log4j12</artifactId>
       <version>1.6.6</version>
+      <scope>test</scope>
     </dependency>
 
     <dependency>

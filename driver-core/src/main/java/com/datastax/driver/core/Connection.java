@@ -9,6 +9,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.google.common.util.concurrent.Uninterruptibles;
+
 import com.datastax.driver.core.policies.*;
 import com.datastax.driver.core.exceptions.AuthenticationException;
 import com.datastax.driver.core.exceptions.DriverInternalError;
@@ -19,6 +21,8 @@ import org.apache.cassandra.transport.messages.*;
 
 import org.jboss.netty.bootstrap.ClientBootstrap;
 import org.jboss.netty.channel.*;
+import org.jboss.netty.channel.group.ChannelGroup;
+import org.jboss.netty.channel.group.DefaultChannelGroup;
 import org.jboss.netty.channel.socket.nio.NioClientSocketChannelFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,7 +51,6 @@ class Connection extends org.apache.cassandra.transport.Connection
     public final InetAddress address;
     private final String name;
 
-    private final ClientBootstrap bootstrap;
     private final Channel channel;
     private final Factory factory;
     private final Dispatcher dispatcher = new Dispatcher();
@@ -70,14 +73,14 @@ class Connection extends org.apache.cassandra.transport.Connection
      * @throws ConnectionException if the connection attempts fails or is
      * refused by the server.
      */
-    private Connection(String name, InetAddress address, Factory factory) throws ConnectionException {
+    private Connection(String name, InetAddress address, Factory factory) throws ConnectionException, InterruptedException {
         super(EMPTY_TRACKER);
 
         this.address = address;
         this.factory = factory;
         this.name = name;
-        this.bootstrap = factory.bootstrap();
 
+        ClientBootstrap bootstrap = factory.newBootstrap();
         bootstrap.setPipelineFactory(new PipelineFactory(this));
 
         ChannelFuture future = bootstrap.connect(new InetSocketAddress(address, factory.getPort()));
@@ -86,6 +89,7 @@ class Connection extends org.apache.cassandra.transport.Connection
         try {
             // Wait until the connection attempt succeeds or fails.
             this.channel = future.awaitUninterruptibly().getChannel();
+            this.factory.allChannels.add(this.channel);
             if (!future.isSuccess())
             {
                 if (logger.isDebugEnabled())
@@ -107,7 +111,7 @@ class Connection extends org.apache.cassandra.transport.Connection
         return " (" + t.getMessage() + ")";
     }
 
-    private void initializeTransport() throws ConnectionException {
+    private void initializeTransport() throws ConnectionException, InterruptedException {
 
         // TODO: we will need to get fancy about handling protocol version at
         // some point, but keep it simple for now.
@@ -116,7 +120,10 @@ class Connection extends org.apache.cassandra.transport.Connection
         }};
         ProtocolOptions.Compression compression = factory.configuration.getProtocolOptions().getCompression();
         if (compression != ProtocolOptions.Compression.NONE)
+        {
             options.put(StartupMessage.COMPRESSION, compression.toString());
+            setCompressor(compression.compressor());
+        }
         StartupMessage startup = new StartupMessage(options);
         try {
             Message.Response response = write(startup).get();
@@ -145,8 +152,6 @@ class Connection extends org.apache.cassandra.transport.Connection
             throw new DriverInternalError("Newly created connection should not be busy");
         } catch (ExecutionException e) {
             throw defunct(new ConnectionException(address, "Unexpected error during transport initialization", e.getCause()));
-        } catch (InterruptedException e) {
-            throw new DriverInternalError(e);
         }
     }
 
@@ -178,7 +183,7 @@ class Connection extends org.apache.cassandra.transport.Connection
 
         try {
             logger.trace("[{}] Setting keyspace {}", name, keyspace);
-            Message.Response response = write(new QueryMessage("USE \"" + keyspace + "\"", ConsistencyLevel.DEFAULT_CASSANDRA_CL)).get();
+            Message.Response response = Uninterruptibles.getUninterruptibly(write(new QueryMessage("USE \"" + keyspace + "\"", ConsistencyLevel.DEFAULT_CASSANDRA_CL)));
             switch (response.type) {
                 case RESULT:
                     this.keyspace = keyspace;
@@ -198,8 +203,6 @@ class Connection extends org.apache.cassandra.transport.Connection
             logger.error("Tried to set the keyspace on busy connection. This should not happen but is not critical");
         } catch (ExecutionException e) {
             throw defunct(new ConnectionException(address, "Error while setting keyspace", e));
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
         }
     }
 
@@ -268,23 +271,23 @@ class Connection extends org.apache.cassandra.transport.Connection
         if (isClosed)
             return;
 
+        // Note: there is no guarantee only one thread will reach that point, but executing this
+        // method multiple time is harmless. If the latter change, we'll have to CAS isClosed to
+        // make sure this gets executed only once.
+
         logger.trace("[{}] closing connection", name);
 
         // Make sure all new writes are rejected
         isClosed = true;
 
         if (!isDefunct) {
-            try {
-                // Busy waiting, we just wait for request to be fully written, shouldn't take long
-                while (writer.get() > 0)
-                    Thread.sleep(10);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
+            // Busy waiting, we just wait for request to be fully written, shouldn't take long
+            while (writer.get() > 0)
+                Uninterruptibles.sleepUninterruptibly(10, TimeUnit.MILLISECONDS);
         }
 
         channel.close().awaitUninterruptibly();
-        // Note: we must not call releaseExternalResources, because this shutdown the executors, which are shared
+        // Note: we must not call releaseExternalResources on the bootstrap, because this shutdown the executors, which are shared
     }
 
     public boolean isClosed() {
@@ -305,6 +308,10 @@ class Connection extends org.apache.cassandra.transport.Connection
 
         private final ExecutorService bossExecutor = Executors.newCachedThreadPool();
         private final ExecutorService workerExecutor = Executors.newCachedThreadPool();
+
+        private final ChannelFactory channelFactory = new NioClientSocketChannelFactory(bossExecutor, workerExecutor);
+        private final ChannelGroup allChannels = new DefaultChannelGroup();
+
 
         private final ConcurrentMap<Host, AtomicInteger> idGenerators = new ConcurrentHashMap<Host, AtomicInteger>();
         public final DefaultResponseHandler defaultHandler;
@@ -333,7 +340,7 @@ class Connection extends org.apache.cassandra.transport.Connection
          *
          * @throws ConnectionException if connection attempt fails.
          */
-        public Connection open(Host host) throws ConnectionException {
+        public Connection open(Host host) throws ConnectionException, InterruptedException {
             InetAddress address = host.getAddress();
             String name = address.toString() + "-" + getIdGenerator(host).getAndIncrement();
             return new Connection(name, address, this);
@@ -350,8 +357,8 @@ class Connection extends org.apache.cassandra.transport.Connection
             return g;
         }
 
-        private ClientBootstrap bootstrap() {
-            ClientBootstrap b = new ClientBootstrap(new NioClientSocketChannelFactory(bossExecutor, workerExecutor));
+        private ClientBootstrap newBootstrap() {
+            ClientBootstrap b = new ClientBootstrap(channelFactory);
 
             SocketOptions options = configuration.getSocketOptions();
 
@@ -376,6 +383,11 @@ class Connection extends org.apache.cassandra.transport.Connection
                 b.setOption("sendBufferSize", sendBufferSize);
 
             return b;
+        }
+
+        public void shutdown() {
+            allChannels.close();
+            channelFactory.releaseExternalResources();
         }
     }
 

@@ -20,13 +20,9 @@ import org.apache.log4j.PatternLayout;
 
 public class CCMBridge {
 
-    static {
-        Logger rootLogger = Logger.getRootLogger();
-        rootLogger.setLevel(Level.INFO);
-        rootLogger.addAppender(new ConsoleAppender(new PatternLayout("%d{HH:mm:ss,SSS} %-5p [%t]: %m%n")));
-    }
-
     private static final Logger logger = Logger.getLogger(CCMBridge.class);
+
+    public static final String IP_PREFIX;
 
     private static final String CASSANDRA_VERSION_REGEXP = "\\d\\.\\d\\.\\d(-\\w+)?";
 
@@ -41,6 +37,12 @@ public class CCMBridge {
             CASSANDRA_DIR = new File(version);
             CASSANDRA_VERSION = "";
         }
+
+        String ip_prefix = System.getProperty("ipprefix");
+        if (ip_prefix == null || ip_prefix.equals("")) {
+            ip_prefix = "127.0.1.";
+        }
+        IP_PREFIX = ip_prefix;
     }
 
     private final Runtime runtime = Runtime.getRuntime();
@@ -53,19 +55,19 @@ public class CCMBridge {
 
     public static CCMBridge create(String name) {
         CCMBridge bridge = new CCMBridge();
-        bridge.execute("ccm create %s -b %s", name, CASSANDRA_VERSION);
+        bridge.execute("ccm create %s -b -i %s %s", name, IP_PREFIX, CASSANDRA_VERSION);
         return bridge;
     }
 
     public static CCMBridge create(String name, int nbNodes) {
         CCMBridge bridge = new CCMBridge();
-        bridge.execute("ccm create %s -n %d -s -b %s", name, nbNodes, CASSANDRA_VERSION);
+        bridge.execute("ccm create %s -n %d -s -i %s -b %s", name, nbNodes, IP_PREFIX, CASSANDRA_VERSION);
         return bridge;
     }
 
     public static CCMBridge create(String name, int nbNodesDC1, int nbNodesDC2) {
         CCMBridge bridge = new CCMBridge();
-        bridge.execute("ccm create %s -n %d:%d -s -b %s", name, nbNodesDC1, nbNodesDC2, CASSANDRA_VERSION);
+        bridge.execute("ccm create %s -n %d:%d -s -i %s -b %s", name, nbNodesDC1, nbNodesDC2, IP_PREFIX, CASSANDRA_VERSION);
         return bridge;
     }
 
@@ -99,14 +101,15 @@ public class CCMBridge {
     }
 
     public void bootstrapNode(int n) {
-        execute("ccm add node%d -i 127.0.0.%d -b", n, n);
+        execute("ccm add node%d -i %s%d -b", n, IP_PREFIX, n);
         execute("ccm node%d start", n);
     }
 
     private void execute(String command, Object... args) {
-
         try {
-            Process p = runtime.exec(String.format(command, args) + " --config-dir=" + ccmDir, null, CASSANDRA_DIR);
+            String fullCommand = String.format(command, args) + " --config-dir=" + ccmDir;
+            logger.debug("Executing: " + fullCommand);
+            Process p = runtime.exec(fullCommand, null, CASSANDRA_DIR);
             int retValue = p.waitFor();
 
             if (retValue != 0) {
@@ -154,7 +157,7 @@ public class CCMBridge {
             schemaCreated = false;
             cassandraCluster = CCMBridge.create("test", 1);
             try {
-                cluster = Cluster.builder().addContactPoints("127.0.0.1").build();
+            	cluster = Cluster.builder().addContactPoints(IP_PREFIX + "1").build();
                 session = cluster.connect();
             } catch (NoHostAvailableException e) {
                 erroredOut = true;
@@ -237,7 +240,7 @@ public class CCMBridge {
         private CCMCluster(CCMBridge bridge, Cluster.Builder builder) {
             this.bridge = bridge;
             try {
-                this.cluster = builder.addContactPoints("127.0.0.1").build();
+                this.cluster = builder.addContactPoints(IP_PREFIX + "1").build();
                 this.session = cluster.connect();
 
             } catch (NoHostAvailableException e) {

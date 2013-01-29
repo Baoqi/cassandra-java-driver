@@ -1,4 +1,4 @@
-package com.datastax.driver.core.utils.querybuilder;
+package com.datastax.driver.core.querybuilder;
 
 import java.net.InetAddress;
 import java.util.*;
@@ -10,40 +10,29 @@ abstract class Utils {
     private static final Pattern cnamePattern = Pattern.compile("\\w+(?:\\[.+\\])?", Pattern.CASE_INSENSITIVE);
     private static final Pattern fctsPattern = Pattern.compile("(?:count|writetime|ttl|token)\\(.*", Pattern.CASE_INSENSITIVE);
 
-    static StringBuilder joinAndAppend(StringBuilder sb, String separator, String[] values) {
-        for (int i = 0; i < values.length; i++) {
+    static StringBuilder joinAndAppend(StringBuilder sb, String separator, List<? extends Appendeable> values) {
+        for (int i = 0; i < values.size(); i++) {
             if (i > 0)
                 sb.append(separator);
-            sb.append(values[i]);
+            values.get(i).appendTo(sb);
         }
         return sb;
     }
 
-    static StringBuilder joinAndAppend(BuiltStatement stmt, StringBuilder sb, String separator, Appendeable[] values) {
-        for (int i = 0; i < values.length; i++) {
+    static StringBuilder joinAndAppendNames(StringBuilder sb, String separator, List<String> values) {
+        for (int i = 0; i < values.size(); i++) {
             if (i > 0)
                 sb.append(separator);
-            values[i].appendTo(sb);
-            if (stmt != null)
-                stmt.maybeAddRoutingKey(values[i].name(), values[i].firstValue());
+            appendName(values.get(i), sb);
         }
         return sb;
     }
 
-    static StringBuilder joinAndAppendNames(StringBuilder sb, String separator, String[] values) {
-        for (int i = 0; i < values.length; i++) {
+    static StringBuilder joinAndAppendValues(StringBuilder sb, String separator, List<Object> values) {
+        for (int i = 0; i < values.size(); i++) {
             if (i > 0)
                 sb.append(separator);
-            appendName(values[i], sb);
-        }
-        return sb;
-    }
-
-    static StringBuilder joinAndAppendValues(StringBuilder sb, String separator, Object[] values) {
-        for (int i = 0; i < values.length; i++) {
-            if (i > 0)
-                sb.append(separator);
-            appendValue(values[i], sb);
+            appendValue(values.get(i), sb);
         }
         return sb;
     }
@@ -117,11 +106,11 @@ abstract class Utils {
         return sb;
     }
 
-    static StringBuilder appendList(List l, StringBuilder sb) {
+    static StringBuilder appendList(List<?> l, StringBuilder sb) {
         return appendList(l, sb, false);
     }
 
-    private static StringBuilder appendList(List l, StringBuilder sb, boolean rawValue) {
+    private static StringBuilder appendList(List<?> l, StringBuilder sb, boolean rawValue) {
         sb.append("[");
         for (int i = 0; i < l.size(); i++) {
             if (i > 0)
@@ -132,11 +121,11 @@ abstract class Utils {
         return sb;
     }
 
-    static StringBuilder appendSet(Set s, StringBuilder sb) {
+    static StringBuilder appendSet(Set<?> s, StringBuilder sb) {
         return appendSet(s, sb, false);
     }
 
-    private static StringBuilder appendSet(Set s, StringBuilder sb, boolean rawValue) {
+    private static StringBuilder appendSet(Set<?> s, StringBuilder sb, boolean rawValue) {
         sb.append("{");
         boolean first = true;
         for (Object elt : s) {
@@ -147,14 +136,14 @@ abstract class Utils {
         return sb;
     }
 
-    static StringBuilder appendMap(Map<Object, Object> m, StringBuilder sb) {
+    static StringBuilder appendMap(Map<?, ?> m, StringBuilder sb) {
         return appendMap(m, sb, false);
     }
 
-    private static StringBuilder appendMap(Map<Object, Object> m, StringBuilder sb, boolean rawValue) {
+    private static StringBuilder appendMap(Map<?, ?> m, StringBuilder sb, boolean rawValue) {
         sb.append("{");
         boolean first = true;
-        for (Map.Entry entry : m.entrySet()) {
+        for (Map.Entry<?, ?> entry : m.entrySet()) {
             if (first)
                 first = false;
             else
@@ -186,8 +175,5 @@ abstract class Utils {
 
     static abstract class Appendeable {
         abstract void appendTo(StringBuilder sb);
-
-        abstract String name();
-        abstract Object firstValue();
     }
 }

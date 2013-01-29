@@ -11,6 +11,7 @@
   <modules>
     <module>driver-core</module>
     <module>driver-examples</module>
+    <module>driver-mapper</module>
   </modules>
 
   <dependencies>

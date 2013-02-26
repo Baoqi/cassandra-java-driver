@@ -1,3 +1,18 @@
+/*
+ *      Copyright (C) 2012 DataStax Inc.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License");
+ *   you may not use this file except in compliance with the License.
+ *   You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ */
 package com.datastax.driver.core;
 
 import java.net.InetAddress;
@@ -7,11 +22,9 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import com.google.common.util.concurrent.Uninterruptibles;
 
-import com.datastax.driver.core.policies.*;
 import com.datastax.driver.core.exceptions.AuthenticationException;
 import com.datastax.driver.core.exceptions.DriverInternalError;
 
@@ -241,21 +254,21 @@ class Connection extends org.apache.cassandra.transport.Connection
             dispatcher.add(handler);
             request.setStreamId(handler.streamId);
 
-            logger.trace("[{}] writting request {}", name, request);
+            logger.trace("[{}] writing request {}", name, request);
             ChannelFuture writeFuture = channel.write(request);
             writeFuture.awaitUninterruptibly();
             if (!writeFuture.isSuccess())
             {
-                logger.debug("[{}] Error writting request {}", name, request);
+                logger.debug("[{}] Error writing request {}", name, request);
                 // Remove this handler from the dispatcher so it don't get notified of the error
                 // twice (we will fail that method already)
                 dispatcher.removeHandler(handler.streamId);
 
                 ConnectionException ce;
                 if (writeFuture.getCause() instanceof java.nio.channels.ClosedChannelException) {
-                    ce = new TransportException(address, "Error writting: Closed channel");
+                    ce = new TransportException(address, "Error writing: Closed channel");
                 } else {
-                    ce = new TransportException(address, "Error writting", writeFuture.getCause());
+                    ce = new TransportException(address, "Error writing", writeFuture.getCause());
                 }
                 throw defunct(ce);
             }
@@ -439,7 +452,7 @@ class Connection extends org.apache.cassandra.transport.Connection
             if (logger.isTraceEnabled())
                 logger.trace(String.format("[%s] connection error", name), e.getCause());
 
-            // Ignore exception while writting, this will be handled by write() directly
+            // Ignore exception while writing, this will be handled by write() directly
             if (writer.get() > 0)
                 return;
 

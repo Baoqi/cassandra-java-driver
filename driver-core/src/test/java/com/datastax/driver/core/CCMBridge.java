@@ -1,3 +1,18 @@
+/*
+ *      Copyright (C) 2012 DataStax Inc.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License");
+ *   you may not use this file except in compliance with the License.
+ *   You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ */
 package com.datastax.driver.core;
 
 import java.io.*;
@@ -13,10 +28,7 @@ import static com.datastax.driver.core.TestUtils.*;
 
 import com.google.common.io.Files;
 
-import org.apache.log4j.ConsoleAppender;
-import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
-import org.apache.log4j.PatternLayout;
 
 public class CCMBridge {
 
@@ -101,7 +113,7 @@ public class CCMBridge {
     }
 
     public void bootstrapNode(int n) {
-        execute("ccm add node%d -i %s%d -b", n, IP_PREFIX, n);
+        execute("ccm add node%d -i %s%d -j %d -b", n, IP_PREFIX, n, 7000 + 100*n);
         execute("ccm node%d start", n);
     }
 
@@ -157,7 +169,7 @@ public class CCMBridge {
             schemaCreated = false;
             cassandraCluster = CCMBridge.create("test", 1);
             try {
-            	cluster = Cluster.builder().addContactPoints(IP_PREFIX + "1").build();
+                cluster = Cluster.builder().addContactPoints(IP_PREFIX + "1").build();
                 session = cluster.connect();
             } catch (NoHostAvailableException e) {
                 erroredOut = true;
@@ -184,7 +196,7 @@ public class CCMBridge {
         }
 
         @Before
-        public void maybeCreateSchema() throws NoHostAvailableException {
+        public void maybeCreateSchema() {
 
             try {
                 if (schemaCreated)
@@ -207,7 +219,7 @@ public class CCMBridge {
                 }
 
                 schemaCreated = true;
-            } catch (NoHostAvailableException e) {
+            } catch (DriverException e) {
                 erroredOut = true;
                 throw e;
             }

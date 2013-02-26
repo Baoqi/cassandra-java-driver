@@ -1,3 +1,18 @@
+/*
+ *      Copyright (C) 2012 DataStax Inc.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License");
+ *   you may not use this file except in compliance with the License.
+ *   You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ */
 package com.datastax.driver.core;
 
 import java.net.InetAddress;
@@ -56,7 +71,7 @@ public class Session {
      * @throws QueryValidationException if the query if invalid (syntax error,
      * unauthorized or any other validation problem).
      */
-    public ResultSet execute(String query) throws NoHostAvailableException {
+    public ResultSet execute(String query) {
         return execute(new SimpleStatement(query));
     }
 
@@ -87,7 +102,7 @@ public class Session {
      * @throws IllegalStateException if {@code query} is a {@code BoundStatement}
      * but {@code !query.isReady()}.
      */
-    public ResultSet execute(Query query) throws NoHostAvailableException {
+    public ResultSet execute(Query query) {
         return executeAsync(query).getUninterruptibly();
     }
 
@@ -149,7 +164,7 @@ public class Session {
      * @throws NoHostAvailableException if no host in the cluster can be
      * contacted successfully to execute this query.
      */
-    public PreparedStatement prepare(String query) throws NoHostAvailableException {
+    public PreparedStatement prepare(String query) {
         Connection.Future future = new Connection.Future(new PrepareMessage(query));
         manager.execute(future, Query.DEFAULT);
         return toPreparedStatement(query, future);
@@ -178,7 +193,7 @@ public class Session {
         return manager.cluster;
     }
 
-    private PreparedStatement toPreparedStatement(String query, Connection.Future future) throws NoHostAvailableException {
+    private PreparedStatement toPreparedStatement(String query, Connection.Future future) {
 
         try {
             Message.Response response = Uninterruptibles.getUninterruptibly(future);
@@ -189,7 +204,7 @@ public class Session {
                         case PREPARED:
                             ResultMessage.Prepared pmsg = (ResultMessage.Prepared)rm;
                             try {
-                                manager.cluster.manager.prepare(pmsg.statementId, query, future.getAddress());
+                                manager.cluster.manager.prepare(pmsg.statementId, manager.poolsState.keyspace, query, future.getAddress());
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
                                 // This method don't propage interruption, at least not for now. However, if we've
@@ -210,9 +225,6 @@ public class Session {
         } catch (ExecutionException e) {
             ResultSetFuture.extractCauseFromExecutionException(e);
             throw new AssertionError();
-        } catch (QueryExecutionException e) {
-            // Preparing a statement cannot throw any of the QueryExecutionException
-            throw new DriverInternalError("Received unexpected QueryExecutionException while preparing statement", e);
         }
     }
 
@@ -330,18 +342,11 @@ public class Session {
                 pool.shutdown();
         }
 
-        public void setKeyspace(String keyspace) throws NoHostAvailableException {
+        public void setKeyspace(String keyspace) {
             try {
                 Uninterruptibles.getUninterruptibly(executeQuery(new QueryMessage("use " + keyspace, ConsistencyLevel.DEFAULT_CASSANDRA_CL), Query.DEFAULT));
             } catch (ExecutionException e) {
-                Throwable cause = e.getCause();
-                // A USE query should never fail unless we cannot contact a node
-                if (cause instanceof NoHostAvailableException)
-                    throw (NoHostAvailableException)cause;
-                else if (cause instanceof DriverUncheckedException)
-                    throw (DriverUncheckedException)cause;
-                else
-                    throw new DriverInternalError("Unexpected exception thrown", cause);
+                ResultSetFuture.extractCauseFromExecutionException(e);
             }
         }
 

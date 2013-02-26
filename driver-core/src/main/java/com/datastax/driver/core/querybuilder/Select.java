@@ -1,6 +1,20 @@
+/*
+ *      Copyright (C) 2012 DataStax Inc.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License");
+ *   you may not use this file except in compliance with the License.
+ *   You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ */
 package com.datastax.driver.core.querybuilder;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -21,6 +35,7 @@ public class Select extends BuiltStatement {
     private final Where where;
     private List<Ordering> orderings;
     private int limit = -1;
+    private boolean allowFiltering;
 
     Select(String keyspace, String table, List<String> columnNames) {
         super();
@@ -64,6 +79,10 @@ public class Select extends BuiltStatement {
 
         if (limit > 0) {
             builder.append(" LIMIT ").append(limit);
+        }
+
+        if (allowFiltering) {
+            builder.append(" ALLOW FILTERING");
         }
 
         return builder.toString();
@@ -127,6 +146,16 @@ public class Select extends BuiltStatement {
 
         this.limit = limit;
         setDirty();
+        return this;
+    }
+
+    /**
+     * Adds an ALLOW FILTERING directive to this statement.
+     *
+     * @return this statement.
+     */
+    public Select allowFiltering() {
+        allowFiltering = true;
         return this;
     }
 

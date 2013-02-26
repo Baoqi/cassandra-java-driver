@@ -1,6 +1,22 @@
+/*
+ *      Copyright (C) 2012 DataStax Inc.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License");
+ *   you may not use this file except in compliance with the License.
+ *   You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ */
 package com.datastax.driver.core;
 
 import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.*;
@@ -8,9 +24,6 @@ import java.util.concurrent.*;
 import org.apache.cassandra.transport.Event;
 import org.apache.cassandra.transport.messages.RegisterMessage;
 import org.apache.cassandra.transport.messages.QueryMessage;
-
-import com.google.common.collect.Sets;
-import com.google.common.util.concurrent.Uninterruptibles;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +38,16 @@ class ControlConnection implements Host.StateListener {
 
     // TODO: we might want to make that configurable
     private static final long MAX_SCHEMA_AGREEMENT_WAIT_MS = 10000;
+
+    private static final InetAddress bindAllAddress;
+    static
+    {
+        try {
+            bindAllAddress = InetAddress.getByAddress(new byte[4]);
+        } catch (UnknownHostException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     private static final String SELECT_KEYSPACES = "SELECT * FROM system.schema_keyspaces";
     private static final String SELECT_COLUMN_FAMILIES = "SELECT * FROM system.schema_columnfamilies";
@@ -53,7 +76,7 @@ class ControlConnection implements Host.StateListener {
     }
 
     // Only for the initial connection. Does not schedule retries if it fails
-    public void connect() throws NoHostAvailableException {
+    public void connect() {
         if (isShutdown)
             return;
 
@@ -108,7 +131,7 @@ class ControlConnection implements Host.StateListener {
             old.close();
     }
 
-    private Connection reconnectInternal() throws NoHostAvailableException {
+    private Connection reconnectInternal() {
 
         Iterator<Host> iter = balancingPolicy.newQueryPlan(Query.DEFAULT);
         Map<InetAddress, String> errors = null;
@@ -280,6 +303,8 @@ class ControlConnection implements Host.StateListener {
             if (addr == null) {
                 addr = row.getInet("peer");
                 logger.error("No rpc_address found for host {} in {}'s peers system table. That should not happen but using address {} instead", addr, connection.address, addr);
+            } else if (addr.equals(bindAllAddress)) {
+                addr = row.getInet("peer");
             }
 
             foundHosts.add(addr);
@@ -327,10 +352,15 @@ class ControlConnection implements Host.StateListener {
                 versions.add(localRow.getUUID("schema_version"));
 
             for (Row row : peersFuture.get()) {
+
                 if (row.isNull("rpc_address") || row.isNull("schema_version"))
                     continue;
 
-                Host peer = metadata.getHost(row.getInet("rpc_address"));
+                InetAddress rpc = row.getInet("rpc_address");
+                if (rpc.equals(bindAllAddress))
+                    rpc = row.getInet("peer");
+
+                Host peer = metadata.getHost(rpc);
                 if (peer != null && peer.getMonitor().isUp())
                     versions.add(row.getUUID("schema_version"));
             }

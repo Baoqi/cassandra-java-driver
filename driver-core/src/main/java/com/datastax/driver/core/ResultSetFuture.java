@@ -19,7 +19,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 
-import com.google.common.base.Throwables;
+import com.google.common.util.concurrent.Uninterruptibles;
 
 import org.apache.cassandra.transport.Message;
 import org.apache.cassandra.transport.messages.ErrorMessage;
@@ -27,33 +27,44 @@ import org.apache.cassandra.transport.messages.ResultMessage;
 
 import com.datastax.driver.core.exceptions.*;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * A future on a {@link ResultSet}.
  *
- * Note that this class implements <a href="http://code.google.com/p/guava-libraries/">guava</a>'s {@code
- * ListenableFuture} and can thus be used with guava's future utilities.
+ * Note that this class implements <a href="http://code.google.com/p/guava-libraries/">Guava</a>'s {@code
+ * ListenableFuture} and can so be used with Guava's future utilities.
  */
-public class ResultSetFuture extends SimpleFuture<ResultSet>
-{
+public class ResultSetFuture extends SimpleFuture<ResultSet> {
+
+    private static final Logger logger = LoggerFactory.getLogger(ResultSetFuture.class);
+
     private final Session.Manager session;
-    private final Message.Request request;
-    final ResponseCallback callback = new ResponseCallback();
+    final ResponseCallback callback;
 
     ResultSetFuture(Session.Manager session, Message.Request request) {
         this.session = session;
-        this.request = request;
+        this.callback = new ResponseCallback(request);
     }
 
-    // The only reason this exists is because we don't want to expose its
-    // method publicly (otherwise Future could have implemented
-    // Connection.ResponseCallback directly)
-    class ResponseCallback implements Connection.ResponseCallback {
+    // The reason this exists is because we don't want to expose its method
+    // publicly (otherwise Future could implement RequestHandler.Callback directly)
+    class ResponseCallback implements RequestHandler.Callback {
 
+        private final Message.Request request;
+
+        ResponseCallback(Message.Request request) {
+            this.request = request;
+        }
+
+        @Override
         public Message.Request request() {
             return request;
         }
 
-        public void onSet(Connection connection, Message.Response response) {
+        @Override
+        public void onSet(Connection connection, Message.Response response, ExecutionInfo info) {
             try {
                 switch (response.type) {
                     case RESULT:
@@ -62,11 +73,11 @@ public class ResultSetFuture extends SimpleFuture<ResultSet>
                             case SET_KEYSPACE:
                                 // propagate the keyspace change to other connections
                                 session.poolsState.setKeyspace(((ResultMessage.SetKeyspace)rm).keyspace);
-                                set(ResultSet.fromMessage(rm, session, connection.address));
+                                set(ResultSet.fromMessage(rm, session, info));
                                 break;
                             case SCHEMA_CHANGE:
                                 ResultMessage.SchemaChange scc = (ResultMessage.SchemaChange)rm;
-                                ResultSet rs = ResultSet.fromMessage(rm, session, connection.address);
+                                ResultSet rs = ResultSet.fromMessage(rm, session, info);
                                 switch (scc.change) {
                                     case CREATED:
                                         if (scc.columnFamily.isEmpty()) {
@@ -78,8 +89,10 @@ public class ResultSetFuture extends SimpleFuture<ResultSet>
                                     case DROPPED:
                                         if (scc.columnFamily.isEmpty()) {
                                             // If that the one keyspace we are logged in, reset to null (it shouldn't really happen but ...)
-                                            if (scc.keyspace.equals(session.poolsState.keyspace))
-                                                session.poolsState.setKeyspace(null);
+                                            // Note: Actually, Cassandra doesn't do that so we don't either as this could confuse prepared statements.
+                                            // We'll add it back if CASSANDRA-5358 changes that behavior
+                                            //if (scc.keyspace.equals(session.poolsState.keyspace))
+                                            //    session.poolsState.setKeyspace(null);
                                             session.cluster.manager.refreshSchema(connection, ResultSetFuture.this, rs, null, null);
                                         } else {
                                             session.cluster.manager.refreshSchema(connection, ResultSetFuture.this, rs, scc.keyspace, null);
@@ -92,10 +105,13 @@ public class ResultSetFuture extends SimpleFuture<ResultSet>
                                             session.cluster.manager.refreshSchema(connection, ResultSetFuture.this, rs, scc.keyspace, scc.columnFamily);
                                         }
                                         break;
+                                    default:
+                                        logger.info("Ignoring unknown schema change result");
+                                        break;
                                 }
                                 break;
                             default:
-                                set(ResultSet.fromMessage(rm, session, connection.address));
+                                set(ResultSet.fromMessage(rm, session, info));
                                 break;
                         }
                         break;
@@ -114,6 +130,13 @@ public class ResultSetFuture extends SimpleFuture<ResultSet>
             }
         }
 
+        // This is only called for internal calls, so don't bother with ExecutionInfo
+        @Override
+        public void onSet(Connection connection, Message.Response response) {
+            onSet(connection, response, null);
+        }
+
+        @Override
         public void onException(Connection connection, Exception exception) {
             setException(exception);
         }
@@ -122,11 +145,11 @@ public class ResultSetFuture extends SimpleFuture<ResultSet>
     /**
      * Waits for the query to return and return its result.
      *
-     * This method is usually more convenient than {@link #get} as it:
+     * This method is usually more convenient than {@link #get} because it:
      * <ul>
-     *   <li>It waits for the result uninterruptibly, and so doesn't throw
+     *   <li>Waits for the result uninterruptibly, and so doesn't throw
      *   {@link InterruptedException}.</li>
-     *   <li>It returns meaningful exceptions, instead of having to deal
+     *   <li>Returns meaningful exceptions, instead of having to deal
      *   with ExecutionException.</li>
      * </ul>
      * As such, it is the preferred way to get the future result.
@@ -134,42 +157,29 @@ public class ResultSetFuture extends SimpleFuture<ResultSet>
      * @throws NoHostAvailableException if no host in the cluster can be
      * contacted successfully to execute this query.
      * @throws QueryExecutionException if the query triggered an execution
-     * exception, i.e. an exception thrown by Cassandra when it cannot execute
+     * exception, that is an exception thrown by Cassandra when it cannot execute
      * the query with the requested consistency level successfully.
-     * @throws QueryValidationException if the query if invalid (syntax error,
+     * @throws QueryValidationException if the query is invalid (syntax error,
      * unauthorized or any other validation problem).
      */
     public ResultSet getUninterruptibly() {
-        boolean interrupted = false;
         try {
-            while (true) {
-                try {
-                    return super.get();
-                } catch (InterruptedException e) {
-                    // We said 'uninterruptibly'
-                    interrupted = true;
-                }
-            }
+            return Uninterruptibles.getUninterruptibly(this);
         } catch (ExecutionException e) {
             extractCauseFromExecutionException(e);
             throw new AssertionError();
-        } finally {
-            // Restore interrupted state
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
         }
     }
 
     /**
-     * Waits for the given time for the query to return and return its
+     * Waits for the provided time for the query to return and return its
      * result if available.
      *
-     * This method is usually more convenient than {@link #get} as it:
+     * This method is usually more convenient than {@link #get} because it:
      * <ul>
-     *   <li>It waits for the result uninterruptibly, and so doesn't throw
+     *   <li>Waits for the result uninterruptibly, and so doesn't throw
      *   {@link InterruptedException}.</li>
-     *   <li>It returns meaningful exceptions, instead of having to deal
+     *   <li>Returns meaningful exceptions, instead of having to deal
      *   with ExecutionException.</li>
      * </ul>
      * As such, it is the preferred way to get the future result.
@@ -177,7 +187,7 @@ public class ResultSetFuture extends SimpleFuture<ResultSet>
      * @throws NoHostAvailableException if no host in the cluster can be
      * contacted successfully to execute this query.
      * @throws QueryExecutionException if the query triggered an execution
-     * exception, i.e. an exception thrown by Cassandra when it cannot execute
+     * exception, that is an exception thrown by Cassandra when it cannot execute
      * the query with the requested consistency level successfully.
      * @throws QueryValidationException if the query if invalid (syntax error,
      * unauthorized or any other validation problem).
@@ -186,39 +196,30 @@ public class ResultSetFuture extends SimpleFuture<ResultSet>
      * QueryExecutionException}).
      */
     public ResultSet getUninterruptibly(long timeout, TimeUnit unit) throws TimeoutException {
-        long start = System.nanoTime();
-        long timeoutNanos = unit.toNanos(timeout);
-        boolean interrupted = false;
         try {
-            while (true) {
-                try {
-                    return super.get(timeoutNanos, TimeUnit.NANOSECONDS);
-                } catch (InterruptedException e) {
-                    // We said 'uninterruptibly'
-                    long now = System.nanoTime();
-                    long elapsedNanos = now - start;
-                    timeoutNanos = timeoutNanos - elapsedNanos;
-                    start = now;
-                    interrupted = true;
-                }
-            }
+            return Uninterruptibles.getUninterruptibly(this, timeout, unit);
         } catch (ExecutionException e) {
             extractCauseFromExecutionException(e);
             throw new AssertionError();
-        } finally {
-            // Restore interrupted state
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
         }
     }
 
     static void extractCauseFromExecutionException(ExecutionException e) {
-        extractCause(e.getCause());
+        // We could just rethrow e.getCause(). However, the cause of the ExecutionException has likely been
+        // created on the I/O thread receiving the response. Which means that the stacktrace associated
+        // with said cause will make no mention of the current thread. This is painful for say, finding
+        // out which execute() statement actually raised the exception. So instead, we re-create the
+        // exception.
+        if (e.getCause() instanceof DriverException)
+            throw ((DriverException)e.getCause()).copy();
+        else
+            throw new DriverInternalError("Unexpected exception thrown", e.getCause());
     }
 
     static void extractCause(Throwable cause) {
-        Throwables.propagateIfInstanceOf(cause, DriverException.class);
+        // Same as above
+        if (cause instanceof DriverException)
+            throw ((DriverException)cause).copy();
         throw new DriverInternalError("Unexpected exception thrown", cause);
     }
 

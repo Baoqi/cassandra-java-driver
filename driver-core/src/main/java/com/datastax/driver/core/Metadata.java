@@ -20,8 +20,6 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,6 +36,7 @@ public class Metadata {
     private final ConcurrentMap<InetAddress, Host> hosts = new ConcurrentHashMap<InetAddress, Host>();
     private final ConcurrentMap<String, KeyspaceMetadata> keyspaces = new ConcurrentHashMap<String, KeyspaceMetadata>();
 
+    @SuppressWarnings("unchecked")
     private volatile TokenMap<? extends Token> tokenMap;
 
     Metadata(Cluster.Manager cluster) {
@@ -133,6 +132,7 @@ public class Metadata {
         }
     }
 
+    @SuppressWarnings("unchecked")
     synchronized void rebuildTokenMap(String partitioner, Map<Host, Collection<String>> allTokens) {
         this.tokenMap = TokenMap.build(partitioner, allTokens);
     }
@@ -165,7 +165,7 @@ public class Metadata {
     }
 
     /**
-     * The set of hosts that are replica for a given partition key.
+     * Returns the set of hosts that are replica for a given partition key.
      * <p>
      * Note that this method is a best effort method. Consumers should not rely
      * too heavily on the result of this method not being stale (or even empty).
@@ -177,6 +177,7 @@ public class Metadata {
      * this information. It is also not guarantee that the returned set won't
      * be empty (which is then some form of staleness).
      */
+    @SuppressWarnings("unchecked")
     public Set<Host> getReplicas(ByteBuffer partitionKey) {
         TokenMap current = tokenMap;
         if (current == null) {
@@ -187,7 +188,7 @@ public class Metadata {
     }
 
     /**
-     * The Cassandra name for the cluster connect to.
+     * Returns the Cassandra name for the cluster connect to.
      *
      * @return the Cassandra name for the cluster connect to.
      */
@@ -205,11 +206,11 @@ public class Metadata {
     }
 
     /**
-     * Return the metadata of a keyspace given its name.
+     * Returns the metadata of a keyspace given its name.
      *
      * @param keyspace the name of the keyspace for which metadata should be
      * returned.
-     * @return the metadat of the requested keyspace or {@code null} if {@code
+     * @return the metadata of the requested keyspace or {@code null} if {@code
      * keyspace} is not a known keyspace.
      */
     public KeyspaceMetadata getKeyspace(String keyspace) {
@@ -226,14 +227,14 @@ public class Metadata {
     }
 
     /**
-     * Return a {@code String} containing CQL queries representing the schema
+     * Returns a {@code String} containing CQL queries representing the schema
      * of this cluster.
      *
      * In other words, this method returns the queries that would allow to
      * recreate the schema of this cluster.
      *
      * Note that the returned String is formatted to be human readable (for
-     * some defintion of human readable at least).
+     * some definition of human readable at least).
      *
      * @return the CQL queries representing this cluster schema as a {code
      * String}.
@@ -250,10 +251,10 @@ public class Metadata {
     static class TokenMap<T extends Token<T>> {
 
         private final Token.Factory<T> factory;
-        private final Map<Token<T>, Set<Host>> tokenToHosts;
-        private final List<Token<T>> ring;
+        private final Map<T, Set<Host>> tokenToHosts;
+        private final List<T> ring;
 
-        private TokenMap(Token.Factory<T> factory, Map<Token<T>, Set<Host>> tokenToHosts, List<Token<T>> ring) {
+        private TokenMap(Token.Factory<T> factory, Map<T, Set<Host>> tokenToHosts, List<T> ring) {
             this.factory = factory;
             this.tokenToHosts = tokenToHosts;
             this.ring = ring;
@@ -261,18 +262,19 @@ public class Metadata {
 
         public static <T extends Token<T>> TokenMap<T> build(String partitioner, Map<Host, Collection<String>> allTokens) {
 
+            @SuppressWarnings("unchecked")
             Token.Factory<T> factory = (Token.Factory<T>)Token.getFactory(partitioner);
             if (factory == null)
                 return null;
 
-            Map<Token<T>, Set<Host>> tokenToHosts = new HashMap<Token<T>, Set<Host>>();
-            Set<Token<T>> allSorted = new TreeSet<Token<T>>();
+            Map<T, Set<Host>> tokenToHosts = new HashMap<T, Set<Host>>();
+            Set<T> allSorted = new TreeSet<T>();
 
             for (Map.Entry<Host, Collection<String>> entry : allTokens.entrySet()) {
                 Host host = entry.getKey();
                 for (String tokenStr : entry.getValue()) {
                     try {
-                        Token<T> t = factory.fromString(tokenStr);
+                        T t = factory.fromString(tokenStr);
                         allSorted.add(t);
                         Set<Host> hosts = tokenToHosts.get(t);
                         if (hosts == null) {
@@ -286,10 +288,10 @@ public class Metadata {
                 }
             }
             // Make all the inet set immutable so we can share them publicly safely
-            for (Map.Entry<Token<T>, Set<Host>> entry: tokenToHosts.entrySet()) {
+            for (Map.Entry<T, Set<Host>> entry: tokenToHosts.entrySet()) {
                 entry.setValue(Collections.unmodifiableSet(entry.getValue()));
             }
-            return new TokenMap(factory, tokenToHosts, new ArrayList<Token<T>>(allSorted));
+            return new TokenMap<T>(factory, tokenToHosts, new ArrayList<T>(allSorted));
         }
 
         private Set<Host> getReplicas(T token) {

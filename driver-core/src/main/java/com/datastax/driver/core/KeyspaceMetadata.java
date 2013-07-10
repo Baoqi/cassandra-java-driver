@@ -99,14 +99,14 @@ public class KeyspaceMetadata {
     }
 
     /**
-     * Return a {@code String} containing CQL queries representing this
+     * Returns a {@code String} containing CQL queries representing this
      * keyspace and the table it contains.
      *
      * In other words, this method returns the queries that would allow to
      * recreate the schema of this keyspace, along with all its table.
      *
      * Note that the returned String is formatted to be human readable (for
-     * some defintion of human readable at least).
+     * some definition of human readable at least).
      *
      * @return the CQL queries representing this keyspace schema as a {code
      * String}.

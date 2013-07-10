@@ -22,6 +22,8 @@ import com.datastax.driver.core.ConsistencyLevel;
  */
 public class ReadTimeoutException extends QueryTimeoutException {
 
+    private static final long serialVersionUID = 0;
+
     private final boolean dataPresent;
 
     public ReadTimeoutException(ConsistencyLevel consistency, int received, int required, boolean dataPresent) {
@@ -32,9 +34,14 @@ public class ReadTimeoutException extends QueryTimeoutException {
         this.dataPresent = dataPresent;
     }
 
+    private ReadTimeoutException(String msg, Throwable cause, ConsistencyLevel consistency, int received, int required, boolean dataPresent) {
+        super(msg, cause, consistency, received, required);
+        this.dataPresent = dataPresent;
+    }
+
     private static String formatDetails(int received, int required, boolean dataPresent) {
         if (received < required)
-            return String.format("%d replica responded over %d required", received, required);
+            return String.format("%d responses were required but only %d replica responded", required, received);
         else if (!dataPresent)
             return String.format("the replica queried for data didn't responded");
         else
@@ -46,7 +53,7 @@ public class ReadTimeoutException extends QueryTimeoutException {
      *
      * During reads, Cassandra doesn't request data from every replica to
      * minimize internal network traffic. Instead, some replica are only asked
-     * for a checksum of the data. A read timeout may occured even if enough
+     * for a checksum of the data. A read timeout may occurred even if enough
      * replica have responded to fulfill the consistency level if only checksum
      * responses have been received. This method allow to detect that case.
      *
@@ -55,5 +62,15 @@ public class ReadTimeoutException extends QueryTimeoutException {
      */
     public boolean wasDataRetrieved() {
         return dataPresent;
+    }
+
+    @Override
+    public DriverException copy() {
+        return new ReadTimeoutException(getMessage(),
+                                        this,
+                                        getConsistencyLevel(),
+                                        getReceivedAcknowledgements(),
+                                        getRequiredAcknowledgements(),
+                                        wasDataRetrieved());
     }
 }

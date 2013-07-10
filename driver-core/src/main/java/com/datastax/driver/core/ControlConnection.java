@@ -21,6 +21,8 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.*;
 
+import com.google.common.base.Objects;
+
 import org.apache.cassandra.transport.Event;
 import org.apache.cassandra.transport.messages.RegisterMessage;
 import org.apache.cassandra.transport.messages.QueryMessage;
@@ -37,7 +39,7 @@ class ControlConnection implements Host.StateListener {
     private static final Logger logger = LoggerFactory.getLogger(ControlConnection.class);
 
     // TODO: we might want to make that configurable
-    private static final long MAX_SCHEMA_AGREEMENT_WAIT_MS = 10000;
+    static final long MAX_SCHEMA_AGREEMENT_WAIT_MS = 10000;
 
     private static final InetAddress bindAllAddress;
     static
@@ -56,23 +58,19 @@ class ControlConnection implements Host.StateListener {
     private static final String SELECT_PEERS = "SELECT peer, data_center, rack, tokens, rpc_address FROM system.peers";
     private static final String SELECT_LOCAL = "SELECT cluster_name, data_center, rack, tokens, partitioner FROM system.local WHERE key='local'";
 
-    private static final String SELECT_SCHEMA_PEERS = "SELECT rpc_address, schema_version FROM system.peers";
+    private static final String SELECT_SCHEMA_PEERS = "SELECT peer, rpc_address, schema_version FROM system.peers";
     private static final String SELECT_SCHEMA_LOCAL = "SELECT schema_version FROM system.local WHERE key='local'";
 
     private final AtomicReference<Connection> connectionRef = new AtomicReference<Connection>();
 
     private final Cluster.Manager cluster;
-    private final LoadBalancingPolicy balancingPolicy;
 
-    private final ReconnectionPolicy reconnectionPolicy = new ExponentialReconnectionPolicy(2 * 1000, 5 * 60 * 1000);
-    private final AtomicReference<ScheduledFuture> reconnectionAttempt = new AtomicReference<ScheduledFuture>();
+    private final AtomicReference<ScheduledFuture<?>> reconnectionAttempt = new AtomicReference<ScheduledFuture<?>>();
 
     private volatile boolean isShutdown;
 
-    public ControlConnection(Cluster.Manager manager, Metadata metadata) {
+    public ControlConnection(Cluster.Manager manager) {
         this.cluster = manager;
-        this.balancingPolicy = new RoundRobinPolicy();
-        this.balancingPolicy.init(manager.getCluster(), metadata.allHosts());
     }
 
     // Only for the initial connection. Does not schedule retries if it fails
@@ -83,11 +81,10 @@ class ControlConnection implements Host.StateListener {
         setNewConnection(reconnectInternal());
     }
 
-    public void shutdown() {
+    public boolean shutdown(long timeout, TimeUnit unit) throws InterruptedException {
         isShutdown = true;
         Connection connection = connectionRef.get();
-        if (connection != null)
-            connection.close();
+        return connection != null ? connection.close(timeout, unit) : true;
     }
 
     private void reconnect() {
@@ -98,7 +95,8 @@ class ControlConnection implements Host.StateListener {
             setNewConnection(reconnectInternal());
         } catch (NoHostAvailableException e) {
             logger.error("[Control connection] Cannot connect to any host, scheduling retry");
-            new AbstractReconnectionHandler(cluster.reconnectionExecutor, reconnectionPolicy.newSchedule(), reconnectionAttempt) {
+            new AbstractReconnectionHandler(cluster.reconnectionExecutor, cluster.reconnectionPolicy().newSchedule(), reconnectionAttempt) {
+                @Override
                 protected Connection tryReconnect() throws ConnectionException {
                     try {
                         return reconnectInternal();
@@ -107,15 +105,18 @@ class ControlConnection implements Host.StateListener {
                     }
                 }
 
+                @Override
                 protected void onReconnection(Connection connection) {
                     setNewConnection(connection);
                 }
 
+                @Override
                 protected boolean onConnectionException(ConnectionException e, long nextDelayMs) {
                     logger.error("[Control connection] Cannot connect to any host, scheduling retry in {} milliseconds", nextDelayMs);
                     return true;
                 }
 
+                @Override
                 protected boolean onUnknownException(Exception e, long nextDelayMs) {
                     logger.error(String.format("[Control connection] Unknown error during reconnection, scheduling retry in %d milliseconds", nextDelayMs), e);
                     return true;
@@ -124,16 +125,39 @@ class ControlConnection implements Host.StateListener {
         }
     }
 
+    private void signalError() {
+
+        // Try just signaling the host monitor, as this will trigger a reconnect as part to marking the host down.
+        Connection connection = connectionRef.get();
+        if (connection != null && connection.isDefunct()) {
+            Host host = cluster.metadata.getHost(connection.address);
+            // Host might be null in the case the host has been removed, but it means this has
+            // been reported already so it's fine.
+            if (host != null) {
+                host.getMonitor().signalConnectionFailure(connection.lastException());
+                return;
+            }
+        }
+
+        // If the connection is not defunct, or the host has left, just reconnect manually
+        reconnect();
+    }
+
     private void setNewConnection(Connection newConnection) {
         logger.debug("[Control connection] Successfully connected to {}", newConnection.address);
         Connection old = connectionRef.getAndSet(newConnection);
-        if (old != null && !old.isClosed())
-            old.close();
+        if (old != null && !old.isClosed()) {
+            try {
+                old.close(0, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     private Connection reconnectInternal() {
 
-        Iterator<Host> iter = balancingPolicy.newQueryPlan(Query.DEFAULT);
+        Iterator<Host> iter = cluster.loadBalancingPolicy().newQueryPlan(Query.DEFAULT);
         Map<InetAddress, String> errors = null;
 
         Host host = null;
@@ -144,6 +168,7 @@ class ControlConnection implements Host.StateListener {
                     return tryConnect(host);
                 } catch (ConnectionException e) {
                     errors = logError(host, e.getMessage(), errors, iter);
+                    host.getMonitor().signalConnectionFailure(e);
                 } catch (ExecutionException e) {
                     errors = logError(host, e.getMessage(), errors, iter);
                 }
@@ -200,18 +225,18 @@ class ControlConnection implements Host.StateListener {
     }
 
     public void refreshSchema(String keyspace, String table) throws InterruptedException {
-        logger.debug("[Control connection] Refreshing schema for {}.{}", keyspace, table);
+        logger.debug("[Control connection] Refreshing schema for {}{}", keyspace == null ? "" : keyspace, table == null ? "" : "." + table);
         try {
             refreshSchema(connectionRef.get(), keyspace, table, cluster);
         } catch (ConnectionException e) {
             logger.debug("[Control connection] Connection error while refeshing schema ({})", e.getMessage());
-            reconnect();
+            signalError();
         } catch (ExecutionException e) {
             logger.error("[Control connection] Unexpected error while refeshing schema", e);
-            reconnect();
+            signalError();
         } catch (BusyConnectionException e) {
             logger.debug("[Control connection] Connection is busy, reconnecting");
-            reconnect();
+            signalError();
         }
     }
 
@@ -246,20 +271,32 @@ class ControlConnection implements Host.StateListener {
 
         logger.debug(String.format("[Control connection] Refreshing node list and token map"));
         try {
-            refreshNodeListAndTokenMap(connectionRef.get());
+            refreshNodeListAndTokenMap(c);
         } catch (ConnectionException e) {
             logger.debug("[Control connection] Connection error while refeshing node list and token map ({})", e.getMessage());
-            reconnect();
+            signalError();
         } catch (ExecutionException e) {
             logger.error("[Control connection] Unexpected error while refeshing node list and token map", e);
-            reconnect();
+            signalError();
         } catch (BusyConnectionException e) {
             logger.debug("[Control connection] Connection is busy, reconnecting");
-            reconnect();
+            signalError();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             logger.debug("[Control connection] Interrupted while refreshing node list and token map, skipping it.");
         }
+    }
+
+    private void updateLocationInfo(Host host, String datacenter, String rack) {
+        if (Objects.equal(host.getDatacenter(), datacenter) && Objects.equal(host.getRack(), rack))
+            return;
+
+        // If the dc/rack information changes, we need to update the load balancing policy.
+        // For what, we remove and re-add the node against the policy. Not the most elegant, and assumes
+        // that the policy will update correctly, but in practice this should work.
+        cluster.loadBalancingPolicy().onDown(host);
+        host.setLocationInfo(datacenter, rack);
+        cluster.loadBalancingPolicy().onAdd(host);
     }
 
     private void refreshNodeListAndTokenMap(Connection connection) throws ConnectionException, BusyConnectionException, ExecutionException, InterruptedException {
@@ -280,16 +317,20 @@ class ControlConnection implements Host.StateListener {
             if (clusterName != null)
                 cluster.metadata.clusterName = clusterName;
 
+            partitioner = localRow.getString("partitioner");
+
             Host host = cluster.metadata.getHost(connection.address);
             // In theory host can't be null. However there is no point in risking a NPE in case we
             // have a race between a node removal and this.
-            if (host != null)
-                host.setLocationInfo(localRow.getString("data_center"), localRow.getString("rack"));
+            if (host == null) {
+                logger.debug("Host in local system table ({}) unknown to us (ok if said host just got removed)", connection.address);
+            } else {
+                updateLocationInfo(host, localRow.getString("data_center"), localRow.getString("rack"));
 
-            partitioner = localRow.getString("partitioner");
-            Set<String> tokens = localRow.getSet("tokens", String.class);
-            if (partitioner != null && !tokens.isEmpty())
-                tokenMap.put(host, tokens);
+                Set<String> tokens = localRow.getSet("tokens", String.class);
+                if (partitioner != null && !tokens.isEmpty())
+                    tokenMap.put(host, tokens);
+            }
         }
 
         List<InetAddress> foundHosts = new ArrayList<InetAddress>();
@@ -319,7 +360,7 @@ class ControlConnection implements Host.StateListener {
                 // We don't know that node, add it.
                 host = cluster.addHost(foundHosts.get(i), true);
             }
-            host.setLocationInfo(dcs.get(i), racks.get(i));
+            updateLocationInfo(host, dcs.get(i), racks.get(i));
 
             if (partitioner != null && !allTokens.get(i).isEmpty())
                 tokenMap.put(host, allTokens.get(i));
@@ -337,9 +378,10 @@ class ControlConnection implements Host.StateListener {
 
     static boolean waitForSchemaAgreement(Connection connection, Metadata metadata) throws ConnectionException, BusyConnectionException, ExecutionException, InterruptedException {
 
-        long start = System.currentTimeMillis();
+        long start = System.nanoTime();
         long elapsed = 0;
         while (elapsed < MAX_SCHEMA_AGREEMENT_WAIT_MS) {
+
             ResultSetFuture peersFuture = new ResultSetFuture(null, new QueryMessage(SELECT_SCHEMA_PEERS, ConsistencyLevel.DEFAULT_CASSANDRA_CL));
             ResultSetFuture localFuture = new ResultSetFuture(null, new QueryMessage(SELECT_SCHEMA_LOCAL, ConsistencyLevel.DEFAULT_CASSANDRA_CL));
             connection.write(peersFuture.callback);
@@ -365,13 +407,15 @@ class ControlConnection implements Host.StateListener {
                     versions.add(row.getUUID("schema_version"));
             }
 
+            logger.debug("Checking for schema agreement: versions are {}", versions);
+
             if (versions.size() <= 1)
                 return true;
 
             // let's not flood the node too much
             Thread.sleep(200);
 
-            elapsed = System.currentTimeMillis() - start;
+            elapsed = Cluster.timeSince(start, TimeUnit.MILLISECONDS);
         }
 
         return false;
@@ -382,28 +426,35 @@ class ControlConnection implements Host.StateListener {
         return c != null && !c.isClosed();
     }
 
+    @Override
     public void onUp(Host host) {
-        balancingPolicy.onUp(host);
     }
 
+    @Override
     public void onDown(Host host) {
-        balancingPolicy.onDown(host);
-
-        // If that's the host we're connected to, and we haven't yet schedul a reconnection, pre-emptively start one
+        // If that's the host we're connected to, and we haven't yet schedule a reconnection, preemptively start one
         Connection current = connectionRef.get();
         if (logger.isTraceEnabled())
-            logger.trace("[Control connection] %s is down, currently connected to {}", host, current == null ? "nobody" : current.address);
-        if (current != null && current.address.equals(host.getAddress()) && reconnectionAttempt.get() == null)
-            reconnect();
+            logger.trace("[Control connection] {} is down, currently connected to {}", host, current == null ? "nobody" : current.address);
+        if (current != null && current.address.equals(host.getAddress()) && reconnectionAttempt.get() == null) {
+            // We might very be on an I/O thread when we reach this so we should not do that on this thread.
+            // Besides, there is no reason to block the onDown method while we try to reconnect.
+            cluster.executor.submit(new Runnable() {
+                @Override
+                public void run() {
+                    reconnect();
+                }
+            });
+        }
     }
 
+    @Override
     public void onAdd(Host host) {
-        balancingPolicy.onAdd(host);
         refreshNodeListAndTokenMap();
     }
 
+    @Override
     public void onRemove(Host host) {
-        balancingPolicy.onRemove(host);
         refreshNodeListAndTokenMap();
     }
 }

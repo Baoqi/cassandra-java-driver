@@ -17,52 +17,53 @@ package com.datastax.driver.core;
 
 import java.util.*;
 
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.testng.annotations.Test;
 
-import com.datastax.driver.core.exceptions.*;
+import static org.testng.Assert.*;
 
 /**
  * Simple test of the Sessions methods against a one node cluster.
  */
 public class SessionTest extends CCMBridge.PerClassSingleNodeCluster {
 
-    private static final String TABLE = "test";
+    private static final String TABLE1 = "test1";
+    private static final String TABLE2 = "test2";
+    private static final String TABLE3 = "test3";
     private static final String COUNTER_TABLE = "counters";
 
-    private static final String INSERT_FORMAT = "INSERT INTO %s (k, t, i, f) VALUES ('%s', '%s', %d, %f)";
-    private static final String SELECT_ALL_FORMAT = "SELECT * FROM %s";
-
+    @Override
     protected Collection<String> getTableDefinitions() {
-        return Arrays.asList(String.format("CREATE TABLE %s (k text PRIMARY KEY, t text, i int, f float)", TABLE),
+        return Arrays.asList(String.format(TestUtils.CREATE_TABLE_SIMPLE_FORMAT, TABLE1),
+                             String.format(TestUtils.CREATE_TABLE_SIMPLE_FORMAT, TABLE2),
+                             String.format(TestUtils.CREATE_TABLE_SIMPLE_FORMAT, TABLE3),
                              String.format("CREATE TABLE %s (k text PRIMARY KEY, c counter)", COUNTER_TABLE));
     }
 
-    @Test
+    @Test(groups = "short")
     public void executeTest() throws Exception {
         // Simple calls to all versions of the execute/executeAsync methods
         String key = "execute_test";
-        ResultSet rs = session.execute(String.format(INSERT_FORMAT, TABLE, key, "foo", 42, 24.03f));
+        ResultSet rs = session.execute(String.format(TestUtils.INSERT_FORMAT, TABLE1, key, "foo", 42, 24.03f));
         assertTrue(rs.isExhausted());
 
         // execute
-        checkExecuteResultSet(session.execute(String.format(SELECT_ALL_FORMAT, TABLE)), key);
-        checkExecuteResultSet(session.execute(new SimpleStatement(String.format(SELECT_ALL_FORMAT, TABLE)).setConsistencyLevel(ConsistencyLevel.ONE)), key);
+        checkExecuteResultSet(session.execute(String.format(TestUtils.SELECT_ALL_FORMAT, TABLE1)), key);
+        checkExecuteResultSet(session.execute(new SimpleStatement(String.format(TestUtils.SELECT_ALL_FORMAT, TABLE1)).setConsistencyLevel(ConsistencyLevel.ONE)), key);
 
         // executeAsync
-        checkExecuteResultSet(session.executeAsync(String.format(SELECT_ALL_FORMAT, TABLE)).getUninterruptibly(), key);
-        checkExecuteResultSet(session.executeAsync(new SimpleStatement(String.format(SELECT_ALL_FORMAT, TABLE)).setConsistencyLevel(ConsistencyLevel.ONE)).getUninterruptibly(), key);
+        checkExecuteResultSet(session.executeAsync(String.format(TestUtils.SELECT_ALL_FORMAT, TABLE1)).getUninterruptibly(), key);
+        checkExecuteResultSet(session.executeAsync(new SimpleStatement(String.format(TestUtils.SELECT_ALL_FORMAT, TABLE1)).setConsistencyLevel(ConsistencyLevel.ONE)).getUninterruptibly(), key);
     }
 
-    @Test
+    @Test(groups = "short")
     public void executePreparedTest() throws Exception {
         // Simple calls to all versions of the execute/executeAsync methods for prepared statements
         // Note: the goal is only to exercice the Session methods, PreparedStatementTest have better prepared statement tests.
         String key = "execute_prepared_test";
-        ResultSet rs = session.execute(String.format(INSERT_FORMAT, TABLE, key, "foo", 42, 24.03f));
+        ResultSet rs = session.execute(String.format(TestUtils.INSERT_FORMAT, TABLE2, key, "foo", 42, 24.03f));
         assertTrue(rs.isExhausted());
 
-        PreparedStatement p = session.prepare(String.format(SELECT_ALL_FORMAT + " WHERE k = ?", TABLE));
+        PreparedStatement p = session.prepare(String.format(TestUtils.SELECT_ALL_FORMAT + " WHERE k = ?", TABLE2));
         BoundStatement bs = p.bind(key);
 
         // executePrepared
@@ -78,30 +79,13 @@ public class SessionTest extends CCMBridge.PerClassSingleNodeCluster {
         assertTrue(!rs.isExhausted());
         Row row = rs.one();
         assertTrue(rs.isExhausted());
-        assertEquals(key,    row.getString("k"));
-        assertEquals("foo",  row.getString("t"));
-        assertEquals(42,     row.getInt("i"));
-        assertEquals(24.03f, row.getFloat("f"), 0.1f);
+        assertEquals(row.getString("k"), key);
+        assertEquals(row.getString("t"), "foo");
+        assertEquals(row.getInt("i"), 42);
+        assertEquals(row.getFloat("f"), 24.03f, 0.1f);
     }
 
-    @Test
-    public void setAndDropKeyspaceTest() throws Exception {
-        // Check that if someone set a keyspace and then drop it, we recognize
-        // that fact and don't assume he is still set to this keyspace
-
-        try {
-            session.execute(String.format(TestUtils.CREATE_KEYSPACE_SIMPLE_FORMAT, "to_drop", 1));
-            session.execute("USE to_drop");
-            session.execute("DROP KEYSPACE to_drop");
-
-            assertEquals(null, session.manager.poolsState.keyspace);
-        } finally {
-            // restore the correct state for remaining states
-            session.execute("USE " + TestUtils.SIMPLE_KEYSPACE);
-        }
-    }
-
-    @Test
+    @Test(groups = "short")
     public void executePreparedCounterTest() throws Exception {
         PreparedStatement p = session.prepare("UPDATE " + COUNTER_TABLE + " SET c = c + ? WHERE k = ?");
 
@@ -110,11 +94,11 @@ public class SessionTest extends CCMBridge.PerClassSingleNodeCluster {
 
         ResultSet rs = session.execute("SELECT * FROM " + COUNTER_TABLE);
         List<Row> rows = rs.all();
-        assertEquals(1, rows.size());
-        assertEquals(2L, rows.get(0).getLong("c"));
+        assertEquals(rows.size(), 1);
+        assertEquals(rows.get(0).getLong("c"), 2L);
     }
 
-    @Test
+    @Test(groups = "short")
     public void compressionTest() throws Exception {
 
         // Same as executeTest, but with compression enabled
@@ -127,10 +111,10 @@ public class SessionTest extends CCMBridge.PerClassSingleNodeCluster {
 
             // Simple calls to all versions of the execute/executeAsync methods
             String key = "execute_compressed_test";
-            ResultSet rs = compressedSession.execute(String.format(INSERT_FORMAT, TABLE, key, "foo", 42, 24.03f));
+            ResultSet rs = compressedSession.execute(String.format(TestUtils.INSERT_FORMAT, TABLE3, key, "foo", 42, 24.03f));
             assertTrue(rs.isExhausted());
 
-            String SELECT_ALL = String.format(SELECT_ALL_FORMAT + " WHERE k = '%s'", TABLE, key);
+            String SELECT_ALL = String.format(TestUtils.SELECT_ALL_FORMAT + " WHERE k = '%s'", TABLE3, key);
 
             // execute
             checkExecuteResultSet(compressedSession.execute(SELECT_ALL), key);

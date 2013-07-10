@@ -16,12 +16,23 @@
 package com.datastax.driver.core.exceptions;
 
 /**
- * Indicates that a query cannot be performed due to the authorisation
+ * Indicates that a query cannot be performed due to the authorization
  * restrictions of the logged user.
  */
 public class UnauthorizedException extends QueryValidationException {
 
+    private static final long serialVersionUID = 0;
+
     public UnauthorizedException(String msg) {
         super(msg);
+    }
+
+    private UnauthorizedException(String msg, Throwable cause) {
+        super(msg, cause);
+    }
+
+    @Override
+    public DriverException copy() {
+        return new UnauthorizedException(getMessage(), this);
     }
 }

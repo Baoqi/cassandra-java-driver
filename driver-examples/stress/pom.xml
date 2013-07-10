@@ -11,25 +11,24 @@
   See the License for the specific language governing permissions and
   limitations under the License. See accompanying LICENSE file.
 -->
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>com.datastax.cassandra</groupId>
     <artifactId>cassandra-driver-examples-parent</artifactId>
-    <version>1.0.0-beta1</version>
+    <version>1.0.2-SNAPSHOT</version>
   </parent>
   <artifactId>cassandra-driver-examples-stress</artifactId>
   <packaging>jar</packaging>
   <name>DataStax Java Driver for Apache Cassandra Examples - Stress</name>
   <description>A stress test example for DataStax Java Driver for Apache Cassandra.</description>
   <url>https://github.com/datastax/java-driver</url>
-    
+
   <dependencies>
     <dependency>
       <groupId>com.datastax.cassandra</groupId>
       <artifactId>cassandra-driver-core</artifactId>
-      <version>1.0.0-beta1</version>
+      <version>1.0.2-SNAPSHOT</version>
     </dependency>
 
     <dependency>
@@ -71,19 +70,18 @@
       <comments>Apache License Version 2.0</comments>
     </license>
   </licenses>
-    
+
   <scm>
     <connection>scm:git:git@github.com:datastax/java-driver.git</connection>
     <developerConnection>scm:git:git@github.com:datastax/java-driver.git</developerConnection>
     <url>https://github.com/datastax/java-driver</url>
   </scm>
-  
+
   <developers>
     <developer>
       <name>Various</name>
       <organization>DataStax</organization>
     </developer>
   </developers>
-  
 </project>
 

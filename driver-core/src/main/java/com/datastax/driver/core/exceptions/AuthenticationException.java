@@ -22,10 +22,18 @@ import java.net.InetAddress;
  */
 public class AuthenticationException extends DriverException {
 
+    private static final long serialVersionUID = 0;
+
     private final InetAddress host;
 
     public AuthenticationException(InetAddress host, String message) {
         super(String.format("Authentication error on host %s: %s", host, message));
+        this.host = host;
+    }
+
+    private AuthenticationException(String message, Throwable cause, InetAddress host)
+    {
+        super(message, cause);
         this.host = host;
     }
 
@@ -36,5 +44,10 @@ public class AuthenticationException extends DriverException {
      */
     public InetAddress getHost() {
         return host;
+    }
+
+    @Override
+    public DriverException copy() {
+        return new AuthenticationException(getMessage(), this, host);
     }
 }

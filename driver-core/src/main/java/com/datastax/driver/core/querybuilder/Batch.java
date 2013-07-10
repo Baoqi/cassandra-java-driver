@@ -27,22 +27,28 @@ import com.datastax.driver.core.Statement;
 public class Batch extends BuiltStatement {
 
     private final List<Statement> statements;
+    private final boolean logged;
     private final Options usings;
     private ByteBuffer routingKey;
 
-    Batch(Statement[] statements) {
+    Batch(Statement[] statements, boolean logged) {
         this.statements = statements.length == 0
                         ? new ArrayList<Statement>()
                         : new ArrayList<Statement>(statements.length);
+        this.logged = logged;
         this.usings = new Options(this);
 
         for (int i = 0; i < statements.length; i++)
             add(statements[i]);
     }
 
+    @Override
     protected String buildQueryString() {
         StringBuilder builder = new StringBuilder();
-        builder.append("BEGIN BATCH");
+
+        builder.append(isCounterOp()
+                       ? "BEGIN COUNTER BATCH"
+                       : (logged ? "BEGIN BATCH" : "BEGIN UNLOGGED BATCH"));
 
         if (!usings.usings.isEmpty()) {
             builder.append(" USING ");
@@ -65,8 +71,18 @@ public class Batch extends BuiltStatement {
      *
      * @param statement the new statement to add.
      * @return this batch.
+     *
+     * @throws IllegalArgumentException if counter and non-counter operations
+     * are mixed.
      */
     public Batch add(Statement statement) {
+        boolean isCounterOp = statement instanceof BuiltStatement && ((BuiltStatement) statement).isCounterOp();
+
+        if (this.isCounterOp == null)
+            setCounterOp(isCounterOp);
+        else if (isCounterOp() != isCounterOp)
+            throw new IllegalArgumentException("Cannot mix counter operations and non-counter operations in a batch statement");
+
         this.statements.add(statement);
         setDirty();
 

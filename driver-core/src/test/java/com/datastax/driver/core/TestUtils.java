@@ -34,6 +34,12 @@ public abstract class TestUtils {
     public static final String CREATE_KEYSPACE_GENERIC_FORMAT = "CREATE KEYSPACE %s WITH replication = { 'class' : '%s', %s }";
 
     public static final String SIMPLE_KEYSPACE = "ks";
+    public static final String SIMPLE_TABLE = "test";
+
+    public static final String CREATE_TABLE_SIMPLE_FORMAT = "CREATE TABLE %s (k text PRIMARY KEY, t text, i int, f float)";
+
+    public static final String INSERT_FORMAT = "INSERT INTO %s (k, t, i, f) VALUES ('%s', '%s', %d, %f)";
+    public static final String SELECT_ALL_FORMAT = "SELECT * FROM %s";
 
     public static BoundStatement setBoundValue(BoundStatement bs, String name, DataType type, Object value) {
         switch (type.getName()) {
@@ -135,47 +141,11 @@ public abstract class TestUtils {
             case TIMEUUID:
                 return row.getUUID(name);
             case LIST:
-                return row.getList(name, classOf(type.getTypeArguments().get(0)));
+                return row.getList(name, type.getTypeArguments().get(0).asJavaClass());
             case SET:
-                return row.getSet(name, classOf(type.getTypeArguments().get(0)));
+                return row.getSet(name, type.getTypeArguments().get(0).asJavaClass());
             case MAP:
-                return row.getMap(name, classOf(type.getTypeArguments().get(0)), classOf(type.getTypeArguments().get(1)));
-        }
-        throw new RuntimeException("Missing handling of " + type);
-    }
-
-    private static Class classOf(DataType type) {
-        assert !type.isCollection();
-
-        switch (type.getName()) {
-            case ASCII:
-            case TEXT:
-            case VARCHAR:
-                return String.class;
-            case BIGINT:
-            case COUNTER:
-                return Long.class;
-            case BLOB:
-                return ByteBuffer.class;
-            case BOOLEAN:
-                return Boolean.class;
-            case DECIMAL:
-                return BigDecimal.class;
-            case DOUBLE:
-                return Double.class;
-            case FLOAT:
-                return Float.class;
-            case INET:
-                return InetAddress.class;
-            case INT:
-                return Integer.class;
-            case TIMESTAMP:
-                return Date.class;
-            case UUID:
-            case TIMEUUID:
-                return UUID.class;
-            case VARINT:
-                return BigInteger.class;
+                return row.getMap(name, type.getTypeArguments().get(0).asJavaClass(), type.getTypeArguments().get(1).asJavaClass());
         }
         throw new RuntimeException("Missing handling of " + type);
     }
@@ -229,10 +199,113 @@ public abstract class TestUtils {
         throw new RuntimeException("Missing handling of " + type);
     }
 
+    // Always return the "same" value for each type
+    public static Object getFixedValue2(final DataType type) {
+        try {
+            switch (type.getName()) {
+                case ASCII:
+                    return "A different ascii string";
+                case BIGINT:
+                    return Long.MAX_VALUE;
+                case BLOB:
+                    ByteBuffer bb = ByteBuffer.allocate(64);
+                    bb.putInt(0xCAFE);
+                    bb.putShort((short) 3);
+                    bb.putShort((short) 45);
+                    return bb;
+                case BOOLEAN:
+                    return false;
+                case COUNTER:
+                    throw new UnsupportedOperationException("Cannot 'getSomeValue' for counters");
+                case DECIMAL:
+                    return new BigDecimal("12.3E+7");
+                case DOUBLE:
+                    return Double.POSITIVE_INFINITY;
+                case FLOAT:
+                    return Float.POSITIVE_INFINITY;
+                case INET:
+                    return InetAddress.getByName("123.123.123.123");
+                case INT:
+                    return Integer.MAX_VALUE;
+                case TEXT:
+                    return "résumé";
+                case TIMESTAMP:
+                    return new Date(872835240000L);
+                case UUID:
+                    return UUID.fromString("067e6162-3b6f-4ae2-a171-2470b63dff00");
+                case VARCHAR:
+                    return "A different varchar résumé";
+                case VARINT:
+                    return new BigInteger(Integer.toString(Integer.MAX_VALUE) + "000");
+                case TIMEUUID:
+                    return UUID.fromString("FE2B4360-28C6-11E2-81C1-0800200C9A66");
+                case LIST:
+                    return new ArrayList(){{ add(getFixedValue2(type.getTypeArguments().get(0))); }};
+                case SET:
+                    return new HashSet(){{ add(getFixedValue2(type.getTypeArguments().get(0))); }};
+                case MAP:
+                    return new HashMap(){{ put(getFixedValue2(type.getTypeArguments().get(0)), getFixedValue2(type.getTypeArguments().get(1))); }};
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        throw new RuntimeException("Missing handling of " + type);
+    }
+
     // Wait for a node to be up and running
     // This is used because there is some delay between when a node has been
     // added through ccm and when it's actually available for querying
+    public static void waitFor(String node, Cluster cluster) {
+        waitFor(node, cluster, 20, false, false);
+    }
+
     public static void waitFor(String node, Cluster cluster, int maxTry) {
+        waitFor(node, cluster, maxTry, false, false);
+    }
+
+    public static void waitForDown(String node, Cluster cluster) {
+        waitFor(node, cluster, 20, true, false);
+    }
+
+    public static void waitForDownWithWait(String node, Cluster cluster, int waitTime) {
+        waitFor(node, cluster, 20, true, false);
+
+        // FIXME: Once stop() works, remove this line
+        try {
+            Thread.sleep(waitTime * 1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void waitForDown(String node, Cluster cluster, int maxTry) {
+        waitFor(node, cluster, maxTry, true, false);
+    }
+
+    public static void waitForDecommission(String node, Cluster cluster) {
+        waitFor(node, cluster, 20, true, true);
+    }
+
+    public static void waitForDecommission(String node, Cluster cluster, int maxTry) {
+        waitFor(node, cluster, maxTry, true, true);
+    }
+
+    private static void waitFor(String node, Cluster cluster, int maxTry, boolean waitForDead, boolean waitForOut) {
+        if (waitForDead || waitForOut)
+            if (waitForDead)
+                logger.info("Waiting for stopped node: " + node);
+            else if (waitForOut)
+                logger.info("Waiting for decommissioned node: " + node);
+        else
+            logger.info("Waiting for upcoming node: " + node);
+
+        // In the case where the we've killed the last node in the cluster, if we haven't
+        // tried doing an actual query, the driver won't realize that last node is dead until
+        // keep alive kicks in, but that's a fairly long time. So we cheat and trigger a force
+        // the detection by forcing a request.
+        if (waitForDead || waitForOut)
+            cluster.manager.submitSchemaRefresh(null, null);
+
         InetAddress address;
         try {
              address = InetAddress.getByName(node);
@@ -244,7 +317,7 @@ public abstract class TestUtils {
         Metadata metadata = cluster.getMetadata();
         for (int i = 0; i < maxTry; ++i) {
             for (Host host : metadata.getAllHosts()) {
-                if (host.getAddress().equals(address) && host.getMonitor().isUp())
+                if (host.getAddress().equals(address) && testHost(host, waitForDead))
                     return;
             }
             try { Thread.sleep(1000); } catch (Exception e) {}
@@ -252,16 +325,25 @@ public abstract class TestUtils {
 
         for (Host host : metadata.getAllHosts()) {
             if (host.getAddress().equals(address)) {
-                if (host.getMonitor().isUp()) {
+                if (testHost(host, waitForDead)) {
                     return;
                 } else {
                     // logging it because this give use the timestamp of when this happens
-                    logger.info(node + " is part of the cluster but is not UP after " + maxTry + "s");
-                    throw new IllegalStateException(node + " is part of the cluster but is not UP after " + maxTry + "s");
+                    logger.info(node + " is not " + (waitForDead ? "DOWN" : "UP") + " after " + maxTry + "s");
+                    throw new IllegalStateException(node + " is not " + (waitForDead ? "DOWN" : "UP") + " after " + maxTry + "s");
                 }
             }
         }
-        logger.info(node + " is not part of the cluster after " + maxTry + "s");
-        throw new IllegalStateException(node + " is not part of the cluster after " + maxTry + "s");
+
+        if (waitForOut){
+            return;
+        } else {
+            logger.info(node + " is not part of the cluster after " + maxTry + "s");
+            throw new IllegalStateException(node + " is not part of the cluster after " + maxTry + "s");
+        }
+    }
+
+    private static boolean testHost(Host host, boolean testForDown) {
+        return testForDown ? !host.getMonitor().isUp() : host.getMonitor().isUp();
     }
 }

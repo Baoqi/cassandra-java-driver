@@ -17,38 +17,59 @@ package com.datastax.driver.core;
 
 import java.net.InetAddress;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Authentication informations provider to connect to Cassandra nodes.
+ * Authentication information provider to connect to Cassandra nodes.
  * <p>
- * The authentication information themselves are just a key-value pairs.
+ * The authentication information consists of key-value pairs.
  * Which exact key-value pairs are required depends on the authenticator
  * set for the Cassandra nodes.
  */
-public interface AuthInfoProvider {
+// NOTE: we don't expose that yet, this will change to something better
+abstract class AuthInfoProvider {
 
     /**
-     * A provider that provides no authentication informations.
+     * A provider that provides no authentication information.
      * <p>
      * This is only useful for when no authentication is to be used.
      */
-    public static final AuthInfoProvider NONE = new AuthInfoProvider() {
-        public Map<String, String> getAuthInfos(InetAddress host) {
+    static final AuthInfoProvider NONE = new AuthInfoProvider() {
+        @Override
+        public Map<String, String> getAuthInfo(InetAddress host) {
             return Collections.<String, String>emptyMap();
         }
     };
 
     /**
-     * The authentication informations to use to connect to {@code host}.
+     * The authentication information to use to connect to {@code host}.
      *
      * Please note that if authentication is required, this method will be
      * called to initialize each new connection created by the driver. It is
      * thus a good idea to make sure this method returns relatively quickly.
      *
      * @param host the Cassandra host for which authentication information
-     * are requested.
+     * is requested.
      * @return The authentication informations to use.
      */
-    public Map<String, String> getAuthInfos(InetAddress host);
+    public abstract Map<String, String> getAuthInfo(InetAddress host);
+
+    static class Simple extends AuthInfoProvider {
+
+        private static final String USERNAME_KEY = "username";
+        private static final String PASSWORD_KEY = "password";
+
+        private final Map<String, String> credentials = new HashMap<String, String>(2);
+
+        Simple(String username, String password) {
+            credentials.put(USERNAME_KEY, username);
+            credentials.put(PASSWORD_KEY, password);
+        }
+
+        @Override
+        public Map<String, String> getAuthInfo(InetAddress host) {
+            return credentials;
+        }
+    }
 }

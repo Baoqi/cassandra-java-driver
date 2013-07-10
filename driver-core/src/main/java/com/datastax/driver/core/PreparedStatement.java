@@ -27,40 +27,43 @@ import com.datastax.driver.core.exceptions.DriverInternalError;
  * Represents a prepared statement, a query with bound variables that has been
  * prepared (pre-parsed) by the database.
  * <p>
- * A prepared statement can be executed once concrete values has been provided
- * for the bound variables. The pair of a prepared statement and values for its
- * bound variables is a BoundStatement and can be executed (by
+ * A prepared statement can be executed once concrete values have been provided
+ * for the bound variables. A prepared statement and the values for its
+ * bound variables constitute a BoundStatement and can be executed (by
  * {@link Session#execute}).
  */
 public class PreparedStatement {
 
     final ColumnDefinitions metadata;
     final MD5Digest id;
+    final String query;
+    final String queryKeyspace;
 
     volatile ByteBuffer routingKey;
     final int[] routingKeyIndexes;
 
     volatile ConsistencyLevel consistency;
 
-    private PreparedStatement(ColumnDefinitions metadata, MD5Digest id, int[] routingKeyIndexes) {
+    private PreparedStatement(ColumnDefinitions metadata, MD5Digest id, int[] routingKeyIndexes, String query, String queryKeyspace) {
         this.metadata = metadata;
         this.id = id;
         this.routingKeyIndexes = routingKeyIndexes;
+        this.query = query;
+        this.queryKeyspace = queryKeyspace;
     }
 
-    static PreparedStatement fromMessage(ResultMessage.Prepared msg, Metadata clusterMetadata) {
+    static PreparedStatement fromMessage(ResultMessage.Prepared msg, Metadata clusterMetadata, String query, String queryKeyspace) {
         switch (msg.kind) {
             case PREPARED:
-                ResultMessage.Prepared pmsg = (ResultMessage.Prepared)msg;
-                ColumnDefinitions.Definition[] defs = new ColumnDefinitions.Definition[pmsg.metadata.names.size()];
+                ColumnDefinitions.Definition[] defs = new ColumnDefinitions.Definition[msg.metadata.names.size()];
                 if (defs.length == 0)
-                    return new PreparedStatement(new ColumnDefinitions(defs), pmsg.statementId, null);
+                    return new PreparedStatement(new ColumnDefinitions(defs), msg.statementId, null, query, queryKeyspace);
 
                 List<ColumnMetadata> partitionKeyColumns = null;
                 int[] pkIndexes = null;
-                KeyspaceMetadata km = clusterMetadata.getKeyspace(pmsg.metadata.names.get(0).ksName);
+                KeyspaceMetadata km = clusterMetadata.getKeyspace(msg.metadata.names.get(0).ksName);
                 if (km != null) {
-                    TableMetadata tm = km.getTable(pmsg.metadata.names.get(0).cfName);
+                    TableMetadata tm = km.getTable(msg.metadata.names.get(0).cfName);
                     if (tm != null) {
                         partitionKeyColumns = tm.getPartitionKey();
                         pkIndexes = new int[partitionKeyColumns.size()];
@@ -71,11 +74,11 @@ public class PreparedStatement {
 
                 // Note: we rely on the fact CQL queries cannot span multiple tables. If that change, we'll have to get smarter.
                 for (int i = 0; i < defs.length; i++) {
-                    defs[i] = ColumnDefinitions.Definition.fromTransportSpecification(pmsg.metadata.names.get(i));
+                    defs[i] = ColumnDefinitions.Definition.fromTransportSpecification(msg.metadata.names.get(i));
                     maybeGetIndex(defs[i].getName(), i, partitionKeyColumns, pkIndexes);
                 }
 
-                return new PreparedStatement(new ColumnDefinitions(defs), pmsg.statementId, allSet(pkIndexes) ? pkIndexes : null);
+                return new PreparedStatement(new ColumnDefinitions(defs), msg.statementId, allSet(pkIndexes) ? pkIndexes : null, query, queryKeyspace);
             default:
                 throw new DriverInternalError(String.format("%s response received when prepared statement received was expected", msg.kind));
         }
@@ -118,10 +121,10 @@ public class PreparedStatement {
      * Creates a new BoundStatement object and bind its variables to the
      * provided values.
      * <p>
-     * This method is a shortcut for {@code new BoundStatement(this).bind(...)}.
+     * This method is a convenience method for {@code new BoundStatement(this).bind(...)}.
      * <p>
-     * Note that while no more {@code values} than bound variables can be
-     * provided, it is allowed to provide less {@code values} that there is
+     * While the number of {@code values} cannot be greater than the number of bound
+     * variables, the number of {@code values} may be fewer than the number of bound
      * variables. In that case, the remaining variables will have to be bound
      * to values by another mean because the resulting {@code BoundStatement}
      * being executable.
@@ -144,13 +147,13 @@ public class PreparedStatement {
     }
 
     /**
-     * Set the routing key for this prepared statement.
+     * Sets the routing key for this prepared statement.
      * <p>
-     * This method allows to manually provide a fixed routing key for all
-     * executions of this prepared statement. It is never mandatory to provide
-     * a routing key through this method and this method should only be used
+     * While you can provide a fixed routing key for all executions of this prepared 
+     * statement with this method, it is not mandatory to provide
+     * one through this method. This method should only be used
      * if the partition key of the prepared query is not part of the prepared
-     * variables (i.e. if the partition key is fixed).
+     * variables (that is if the partition key is fixed).
      * <p>
      * Note that if the partition key is part of the prepared variables, the
      * routing key will be automatically computed once those variables are bound.
@@ -166,11 +169,11 @@ public class PreparedStatement {
     }
 
     /**
-     * Set the routing key for this query.
+     * Sets the routing key for this query.
      * <p>
      * See {@link #setRoutingKey(ByteBuffer)} for more information. This
      * method is a variant for when the query partition key is composite and
-     * thus the routing key must be built from multiple values.
+     * the routing key must be built from multiple values.
      *
      * @param routingKeyComponents the raw (binary) values to compose to obtain
      * the routing key.
@@ -184,10 +187,10 @@ public class PreparedStatement {
     }
 
     /**
-     * Sets a default consistency level for all {@code BoundStatement} created
-     * from this object.
+     * Sets a default consistency level for all bound statements 
+     * created from this prepared statement.
      * <p>
-     * If no consistency level is set through this method, the BoundStatement
+     * If no consistency level is set through this method, the bound statement
      * created from this object will use the default consistency level (ONE).
      * <p>
      * Changing the default consistency level is not retroactive, it only
@@ -202,7 +205,7 @@ public class PreparedStatement {
     }
 
     /**
-     * The default consistency level set through {@link #setConsistencyLevel}.
+     * Returns the default consistency level set through {@link #setConsistencyLevel}.
      *
      * @return the default consistency level. Returns {@code null} if no
      * consistency level has been set through this object {@code setConsistencyLevel}
@@ -211,4 +214,39 @@ public class PreparedStatement {
     public ConsistencyLevel getConsistencyLevel() {
         return consistency;
     }
+
+    /**
+     * Returns the string of the query that was prepared to yield this {@code
+     * PreparedStatement}.
+     * <p>
+     * Note that a CQL3 query may be implicitly applied to the current keyspace
+     * (that is, if the keyspace is not explicitly qualified in the query
+     * itself). For prepared queries, the current keyspace used is the one at
+     * the time of the preparation, not the one at execution time. The current
+     * keyspace at the time of the preparation can be retrieved through
+     * {@link #getQueryKeyspace}.
+     *
+     * @return the query that was prepared to yield this
+     * {@code PreparedStatement}.
+     */
+    public String getQueryString()
+    {
+        return query;
+    }
+
+    /**
+     * Returns the keyspace at the time that this prepared statement was prepared,
+     * (that is the one on which this statement applies unless it specified a
+     * keyspace explicitly).
+     *
+     * @return the keyspace at the time that this statement was prepared or
+     * {@code null} if no keyspace was set when the query was prepared (which
+     * is possible since keyspaces can be explicitly qualified in queries and
+     * so may not require a current keyspace to be set).
+     */
+    public String getQueryKeyspace()
+    {
+        return queryKeyspace;
+    }
+
 }

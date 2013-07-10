@@ -21,10 +21,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ScheduledFuture;
 
+import com.google.common.collect.ImmutableList;
+
 /**
  * A Cassandra node.
  *
- * This class keeps the informations the driver maintain on a given Cassandra node.
+ * This class keeps the information the driver maintain on a given Cassandra node.
  */
 public class Host {
 
@@ -35,7 +37,9 @@ public class Host {
     private volatile String rack;
 
     // Tracks reconnection attempts to that host so we avoid adding multiple tasks
-    final AtomicReference<ScheduledFuture> reconnectionAttempt = new AtomicReference<ScheduledFuture>();
+    final AtomicReference<ScheduledFuture<?>> reconnectionAttempt = new AtomicReference<ScheduledFuture<?>>();
+
+    final ExecutionInfo defaultExecutionInfo;
 
     // ClusterMetadata keeps one Host object per inet address, so don't use
     // that constructor unless you know what you do (use ClusterMetadata.getHost typically).
@@ -45,6 +49,7 @@ public class Host {
 
         this.address = address;
         this.monitor = new HealthMonitor(policy.create(this));
+        this.defaultExecutionInfo = new ExecutionInfo(ImmutableList.of(this));
     }
 
     void setLocationInfo(String datacenter, String rack) {
@@ -64,12 +69,12 @@ public class Host {
     /**
      * Returns the name of the datacenter this host is part of.
      *
-     * The returned datacenter name is the one as known by Cassandra. Also note
-     * that it is possible for this information to not be available. In that
-     * case this method returns {@code null} and caller should always expect
-     * that possibility.
+     * The returned datacenter name is the one as known by Cassandra. 
+     * It is also possible for this information to be unavailable. In that
+     * case this method returns {@code null}, and the caller should always be aware
+     * of this possibility.
      *
-     * @return the Cassandra datacenter name.
+     * @return the Cassandra datacenter name or null if datacenter is unavailable.
      */
     public String getDatacenter() {
         return datacenter;
@@ -78,12 +83,12 @@ public class Host {
     /**
      * Returns the name of the rack this host is part of.
      *
-     * The returned rack name is the one as known by Cassandra. Also note that
-     * it is possible for this information to not be available. In that case
-     * this method returns {@code null} and caller should always expect that
+     * The returned rack name is the one as known by Cassandra.
+     * It is also possible for this information to be unavailable. In that case
+     * this method returns {@code null}, and the caller should always aware of this
      * possibility.
      *
-     * @return the Cassandra rack name.
+     * @return the Cassandra rack name or null if the rack is unavailable
      */
     public String getRack() {
         return rack;
@@ -94,7 +99,7 @@ public class Host {
      *
      * The health monitor keeps tracks of the known host state (up or down). A
      * class implementing {@link Host.StateListener} can also register against
-     * the healt monitor to be notified when this node is detected down/up.
+     * the health monitor to be notified when this node is detected to be up or down
      *
      * @return the host {@link HealthMonitor}.
      */
@@ -136,7 +141,7 @@ public class Host {
         }
 
         /**
-         * Register the provided listener to be notified on up/down events.
+         * Registers the provided listener to be notified on up/down events.
          *
          * Registering the same listener multiple times is a no-op.
          *
@@ -147,7 +152,7 @@ public class Host {
         }
 
         /**
-         * Unregister a given provided listener.
+         * Unregisters a given provided listener.
          *
          * This method is a no-op if {@code listener} hadn't previously be
          * registered against this monitor.
@@ -155,7 +160,7 @@ public class Host {
          * @param listener the {@link Host.StateListener} to unregister.
          */
         public void unregister(StateListener listener) {
-            listeners.add(listener);
+            listeners.remove(listener);
         }
 
         /**
@@ -167,17 +172,17 @@ public class Host {
             return isUp;
         }
 
-        private void setDown() {
+        void setDown() {
             isUp = false;
             for (Host.StateListener listener : listeners)
                 listener.onDown(Host.this);
         }
 
         /**
-         * Reset the monitor, setting the host as up and informing the
+         * Resets the monitor, setting the host as up and informing the
          * registered listener that the node is up.
          */
-        void reset() {
+        void setUp() {
             policy.reset();
             for (Host.StateListener listener : listeners)
                 listener.onUp(Host.this);
@@ -185,6 +190,10 @@ public class Host {
         }
 
         boolean signalConnectionFailure(ConnectionException exception) {
+            // Already down, avoid duplicate signaling
+            if (!isUp)
+                return true;
+
             boolean isDown = policy.addFailure(exception);
             if (isDown)
                 setDown();
@@ -193,13 +202,13 @@ public class Host {
     }
 
     /**
-     * Interface for listeners that are interested in hosts add, up, down and
-     * remove events.
+     * Interface for listeners that are interested in hosts added, up, down and
+     * removed events.
      * <p>
-     * Note that particularly for up and down events, it is possible that the
-     * same event be delivered multiple times. Listeners should thus be
-     * resilient and ignore a down (resp. up) event if the node has already
-     * been signaled down (resp. up).
+     * It is possible for the same event to be fired multiple times, 
+     * particularly for up or down events. Therefore, a listener should
+     * ignore the same event if it has already been notified of a
+     * node's state.
      */
     public interface StateListener {
 
@@ -213,14 +222,14 @@ public class Host {
         public void onAdd(Host host);
 
         /**
-         * Called when a node is detected up.
+         * Called when a node is determined to be up.
          *
          * @param host the host that has been detected up.
          */
         public void onUp(Host host);
 
         /**
-         * Called when a node is detected down.
+         * Called when a node is determined to be down.
          *
          * @param host the host that has been detected down.
          */

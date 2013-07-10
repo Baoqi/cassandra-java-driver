@@ -34,10 +34,17 @@ import java.util.Map;
  */
 public class NoHostAvailableException extends DriverException {
 
+    private static final long serialVersionUID = 0;
+
     private final Map<InetAddress, String> errors;
 
     public NoHostAvailableException(Map<InetAddress, String> errors) {
         super(makeMessage(errors));
+        this.errors = errors;
+    }
+
+    private NoHostAvailableException(String message, Throwable cause, Map<InetAddress, String> errors) {
+        super(message, cause);
         this.errors = errors;
     }
 
@@ -52,7 +59,28 @@ public class NoHostAvailableException extends DriverException {
         return new HashMap<InetAddress, String>(errors);
     }
 
+    @Override
+    public DriverException copy() {
+        return new NoHostAvailableException(getMessage(), this, errors);
+    }
+
     private static String makeMessage(Map<InetAddress, String> errors) {
-        return String.format("All host(s) tried for query failed (tried: %s)", errors.keySet());
+        // For small cluster, ship the whole error detail in the error message.
+        // This is helpful when debugging on a localhost/test cluster in particular.
+        if (errors.size() == 0)
+            return String.format("All host(s) tried for query failed (no host was tried)");
+
+        if (errors.size() <= 3) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("All host(s) tried for query failed (tried: ");
+            int n = 0;
+            for (Map.Entry<InetAddress, String> entry : errors.entrySet())
+            {
+                if (n++ > 0) sb.append(", ");
+                sb.append(entry.getKey()).append(" (").append(entry.getValue()).append(")");
+            }
+            return sb.append(")").toString();
+        }
+        return String.format("All host(s) tried for query failed (tried: %s - use getErrors() for details)", errors.keySet());
     }
 }

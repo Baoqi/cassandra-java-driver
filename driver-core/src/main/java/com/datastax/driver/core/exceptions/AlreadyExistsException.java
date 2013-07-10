@@ -16,15 +16,23 @@
 package com.datastax.driver.core.exceptions;
 
 /**
- * Exception thrown when a query attemps to create a keyspace or table that already exists.
+ * Exception thrown when a query attempts to create a keyspace or table that already exists.
  */
 public class AlreadyExistsException extends QueryValidationException {
+
+    private static final long serialVersionUID = 0;
 
     private final String keyspace;
     private final String table;
 
     public AlreadyExistsException(String keyspace, String table) {
         super(makeMsg(keyspace, table));
+        this.keyspace = keyspace;
+        this.table = table;
+    }
+
+    private AlreadyExistsException(String msg, Throwable cause, String keyspace, String table) {
+        super(msg, cause);
         this.keyspace = keyspace;
         this.table = table;
     }
@@ -70,5 +78,10 @@ public class AlreadyExistsException extends QueryValidationException {
      */
     public String getTable() {
         return table.isEmpty() ? null : table;
+    }
+
+    @Override
+    public DriverException copy() {
+        return new AlreadyExistsException(getMessage(), this, keyspace, table);
     }
 }

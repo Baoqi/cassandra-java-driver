@@ -74,7 +74,7 @@ public class TableMetadata {
 
             // First, figure out which kind of table we are
             boolean isCompact = false;
-            AbstractType ct = TypeParser.parse(row.getString(COMPARATOR));
+            AbstractType<?> ct = TypeParser.parse(row.getString(COMPARATOR));
             boolean isComposite = ct instanceof CompositeType;
             List<AbstractType<?>> columnTypes = isComposite
                                               ? ((CompositeType)ct).types
@@ -83,7 +83,7 @@ public class TableMetadata {
             int clusteringSize;
             boolean hasValue;
             int last = columnTypes.size() - 1;
-            AbstractType lastType = columnTypes.get(last);
+            AbstractType<?> lastType = columnTypes.get(last);
             if (isComposite) {
                 if (lastType instanceof ColumnToCollectionType || (columnAliases.size() == last && lastType instanceof UTF8Type)) {
                     hasValue = false;
@@ -107,7 +107,7 @@ public class TableMetadata {
             TableMetadata tm = new TableMetadata(ksm, name, partitionKey, clusteringKey, columns, new Options(row, isCompact));
 
             // Partition key
-            AbstractType kt = TypeParser.parse(row.getString(KEY_VALIDATOR));
+            AbstractType<?> kt = TypeParser.parse(row.getString(KEY_VALIDATOR));
             List<AbstractType<?>> keyTypes = kt instanceof CompositeType
                                            ? ((CompositeType)kt).types
                                            : Collections.<AbstractType<?>>singletonList(kt);
@@ -135,7 +135,7 @@ public class TableMetadata {
 
             // Value alias (if present)
             if (hasValue) {
-                AbstractType vt = TypeParser.parse(row.getString(VALIDATOR));
+                AbstractType<?> vt = TypeParser.parse(row.getString(VALIDATOR));
                 String valueAlias = row.isNull(KEY_ALIASES) ? DEFAULT_VALUE_ALIAS : row.getString(VALUE_ALIAS);
                 ColumnMetadata vm = new ColumnMetadata(tm, valueAlias, Codec.rawTypeToDataType(vt), null);
                 columns.put(valueAlias, vm);
@@ -181,11 +181,11 @@ public class TableMetadata {
     /**
      * Returns a list containing all the columns of this table.
      *
-     * The order of the columns in the returned list will be consistent with
+     * The order of the columns in the list is consistent with
      * the order of the columns returned by a {@code SELECT * FROM thisTable}:
-     * the first column will be the partition key, next will be the clustering
-     * keys in there defined order, and then will follow the rest of the
-     * columns in alphabetic order.
+     * the first column is the partition key, next are the clustering
+     * keys in their defined order, and then the rest of the
+     * columns follow in alphabetic order.
      *
      * @return a list containing the metadata for the columns of this table.
      */
@@ -194,11 +194,11 @@ public class TableMetadata {
     }
 
     /**
-     * Return the list of columns composing the primary key for this table.
+     * Returns the list of columns composing the primary key for this table.
      *
-     * Note that a table will always have at least have a partition key (that
-     * may itself be one or more columns), so the returned list will at least
-     * have one element.
+     * A table will always at least have a partition key (that
+     * may itself be one or more columns), so the returned list at least
+     * has one element.
      *
      * @return the list of columns composing the primary key for this table.
      */
@@ -210,10 +210,10 @@ public class TableMetadata {
     }
 
     /**
-     * Return the list of columns composing the partition key for this table.
+     * Returns the list of columns composing the partition key for this table.
      *
-     * Note that a table will always have a partition key so the returned list
-     * will at least have one element.
+     * A table always has a partition key so the returned list has
+     * at least one element.
      *
      * @return the list of columns composing the partition key for this table.
      */
@@ -222,7 +222,7 @@ public class TableMetadata {
     }
 
     /**
-     * Return the list of columns composing the clustering key for this table.
+     * Returns the list of columns composing the clustering key for this table.
      *
      * @return the list of columns composing the clustering key for this table.
      * If the clustering key is empty, an empty list is returned.
@@ -232,9 +232,9 @@ public class TableMetadata {
     }
 
     /**
-     * The options of this table.
+     * Returns the options for this table.
      *
-     * @return the options of this table.
+     * @return the options for this table.
      */
     public Options getOptions() {
         return options;
@@ -243,6 +243,7 @@ public class TableMetadata {
     // :_(
     private static ObjectMapper jsonMapper = new ObjectMapper(new JsonFactory());
 
+    @SuppressWarnings("unchecked")
     static List<String> fromJsonList(String json) {
         try {
             return jsonMapper.readValue(json, List.class);
@@ -251,6 +252,7 @@ public class TableMetadata {
         }
     }
 
+    @SuppressWarnings("unchecked")
     static Map<String, String> fromJsonMap(String json) {
         try {
             return jsonMapper.readValue(json, Map.class);
@@ -264,15 +266,15 @@ public class TableMetadata {
     }
 
     /**
-     * Return a {@code String} containing CQL queries representing this
+     * Returns a {@code String} containing CQL queries representing this
      * table and the index on it.
      *
-     * In other words, this method returns the queries that would allow to
+     * In other words, this method returns the queries that would allow you to
      * recreate the schema of this table, along with the index defined on
      * columns of this table.
      *
      * Note that the returned String is formatted to be human readable (for
-     * some defintion of human readable at least).
+     * some definition of human readable at least).
      *
      * @return the CQL queries representing this table schema as a {code
      * String}.
@@ -298,7 +300,7 @@ public class TableMetadata {
      * This method returns a single 'CREATE TABLE' query with the options
      * corresponding to this table definition.
      *
-     * Note that the returned string will be a single line; the returned query
+     * Note that the returned string is a single line; the returned query
      * is not formatted in any way.
      *
      * @return the 'CREATE TABLE' query corresponding to this table.
@@ -374,7 +376,7 @@ public class TableMetadata {
     }
 
     private StringBuilder and(StringBuilder sb, boolean formatted) {
-        return newLine(sb, formatted).append(spaces(3, formatted)).append("AND ");
+        return newLine(sb, formatted).append(spaces(2, formatted)).append(" AND ");
     }
 
     private String spaces(int n, boolean formatted) {
@@ -440,7 +442,7 @@ public class TableMetadata {
         }
 
         /**
-         * Whether the table uses the {@code COMPACT STORAGE} option.
+         * Returns whether the table uses the {@code COMPACT STORAGE} option.
          *
          * @return whether the table uses the {@code COMPACT STORAGE} option.
          */
@@ -449,7 +451,7 @@ public class TableMetadata {
         }
 
         /**
-         * The commentary set for this table.
+         * Returns the commentary set for this table.
          *
          * @return the commentary set for this table, or {@code null} if noe has been set.
          */
@@ -458,7 +460,7 @@ public class TableMetadata {
         }
 
         /**
-         * The chance with which a read repair is triggered for this table.
+         * Returns the chance with which a read repair is triggered for this table.
          *
          * @return the read repair change set for table (in [0.0, 1.0]).
          */
@@ -467,7 +469,7 @@ public class TableMetadata {
         }
 
         /**
-         * The (cluster) local read repair chance set for this table.
+         * Returns the cluster local read repair chance set for this table.
          *
          * @return the local read repair change set for table (in [0.0, 1.0]).
          */
@@ -476,7 +478,7 @@ public class TableMetadata {
         }
 
         /**
-         * Whether replicateOnWrite is set for this table.
+         * Returns whether replicateOnWrite is set for this table.
          *
          * This is only meaningful for tables holding counters.
          *
@@ -487,7 +489,7 @@ public class TableMetadata {
         }
 
         /**
-         * The tombstone garbage collection grace time in seconds for this table.
+         * Returns the tombstone garbage collection grace time in seconds for this table.
          *
          * @return the tombstone garbage collection grace time in seconds for this table.
          */
@@ -496,16 +498,16 @@ public class TableMetadata {
         }
 
         /**
-         * The false positive chance for the bloom filter of this table.
+         * Returns the false positive chance for the Bloom filter of this table.
          *
-         * @return the bloom filter false positive chance for this table (in [0.0, 1.0]).
+         * @return the Bloom filter false positive chance for this table (in [0.0, 1.0]).
          */
         public double getBloomFilterFalsePositiveChance() {
             return bfFpChance;
         }
 
         /**
-         * The caching option for this table.
+         * Returns the caching option for this table.
          *
          * @return the caching option for this table.
          */
@@ -514,7 +516,7 @@ public class TableMetadata {
         }
 
         /**
-         * The compaction options for this table.
+         * Returns the compaction options for this table.
          *
          * @return a map containing the compaction options for this table.
          */
@@ -523,7 +525,7 @@ public class TableMetadata {
         }
 
         /**
-         * The compression options for this table.
+         * Returns the compression options for this table.
          *
          * @return a map containing the compression options for this table.
          */

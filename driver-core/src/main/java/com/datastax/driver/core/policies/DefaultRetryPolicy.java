@@ -45,7 +45,7 @@ public class DefaultRetryPolicy implements RetryPolicy {
      * replica had responded to the read request but data was not retrieved
      * amongst those. Indeed, that case usually means that enough replica
      * are alive to satisfy the consistency but the coordinator picked a
-     * dead one for data retrieval, not having detecte that replica as dead
+     * dead one for data retrieval, not having detected that replica as dead
      * yet. The reasoning for retrying then is that by the time we get the
      * timeout the dead replica will likely have been detected as dead and
      * the retry has a high change of success.
@@ -62,6 +62,7 @@ public class DefaultRetryPolicy implements RetryPolicy {
      * @return {@code RetryDecision.retry(cl)} if no retry attempt has yet been tried and
      * {@code receivedResponses >= requiredResponses && !dataRetrieved}, {@code RetryDecision.rethrow()} otherwise.
      */
+    @Override
     public RetryDecision onReadTimeout(Query query, ConsistencyLevel cl, int requiredResponses, int receivedResponses, boolean dataRetrieved, int nbRetry) {
         if (nbRetry != 0)
             return RetryDecision.rethrow();
@@ -93,6 +94,7 @@ public class DefaultRetryPolicy implements RetryPolicy {
      * @return {@code RetryDecision.retry(cl)} if no retry attempt has yet been tried and
      * {@code writeType == WriteType.BATCH_LOG}, {@code RetryDecision.rethrow()} otherwise.
      */
+    @Override
     public RetryDecision onWriteTimeout(Query query, ConsistencyLevel cl, WriteType writeType, int requiredAcks, int receivedAcks, int nbRetry) {
         if (nbRetry != 0)
             return RetryDecision.rethrow();
@@ -118,6 +120,7 @@ public class DefaultRetryPolicy implements RetryPolicy {
      * @param nbRetry the number of retry already performed for this operation.
      * @return {@code RetryDecision.rethrow()}.
      */
+    @Override
     public RetryDecision onUnavailable(Query query, ConsistencyLevel cl, int requiredReplica, int aliveReplica, int nbRetry) {
         return RetryDecision.rethrow();
     }

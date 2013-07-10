@@ -15,6 +15,7 @@
  */
 package com.datastax.driver.stress;
 
+import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -35,6 +36,17 @@ public class Stress {
 
     private static final Map<String, QueryGenerator.Builder> generators = new HashMap<String, QueryGenerator.Builder>();
 
+    private static final OptionParser parser = new OptionParser() {{
+        accepts("h", "Show this help message");
+        accepts("n", "Number of requests to perform (default: unlimited)").withRequiredArg().ofType(Integer.class);
+        accepts("t", "Level of concurrency to use").withRequiredArg().ofType(Integer.class).defaultsTo(50);
+        accepts("async", "Make asynchronous requests instead of blocking ones");
+        accepts("csv", "Save metrics into csv instead of displaying on stdout");
+        accepts("columns-per-row", "Number of columns per CQL3 row").withRequiredArg().ofType(Integer.class).defaultsTo(5);
+        accepts("value-size", "The size in bytes for column values").withRequiredArg().ofType(Integer.class).defaultsTo(34);
+        accepts("ip", "The hosts ip to connect to").withRequiredArg().ofType(String.class).defaultsTo("127.0.0.1");
+    }};
+
     public static void register(String name, QueryGenerator.Builder generator) {
         if (generators.containsKey(name))
             throw new IllegalStateException("There is already a generator registered with the name " + name);
@@ -42,71 +54,91 @@ public class Stress {
         generators.put(name, generator);
     }
 
-    private static void printHelp(OptionParser parser, Collection<String> generators) throws Exception {
+    private static void printHelp(OptionParser parser, Collection<String> generators) {
 
         System.out.println("Usage: stress <generator> [<option>]*\n");
         System.out.println("Where <generator> can be one of " + generators);
         System.out.println();
-        parser.printHelpOn(System.out);
+
+        try {
+            parser.printHelpOn(System.out);
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
     }
 
-    public static void main(String[] args) throws Exception {
+    private static OptionSet parseOptions(String[] args) {
+        try {
+            OptionSet options = parser.parse(args);
+            if (options.has("h")) {
+                printHelp(parser, generators.keySet());
+                System.exit(0);
+            }
+            return options;
+        } catch (Exception e) {
+            System.err.println("Error parsing options: " + e.getMessage());
+            printHelp(parser, generators.keySet());
+            System.exit(1);
+            throw new AssertionError();
+        }
+    }
 
-        OptionParser parser = new OptionParser();
-
-        parser.accepts("?", "Show this help message");
-        parser.accepts("n", "Number of iterations for the query generator").withRequiredArg().ofType(Integer.class).defaultsTo(1000000);
-        parser.accepts("t", "Number of threads to use").withRequiredArg().ofType(Integer.class).defaultsTo(50);
-        parser.accepts("csv", "Save metrics into csv instead of displaying on stdout");
-        parser.accepts("columns-per-row", "Number of columns per CQL3 row").withRequiredArg().ofType(Integer.class).defaultsTo(5);
-        parser.accepts("value-size", "The size in bytes for column values").withRequiredArg().ofType(Integer.class).defaultsTo(34);
-        parser.accepts("ip", "The hosts ip to connect to").withRequiredArg().ofType(String.class).defaultsTo("127.0.0.1");
-
+    private static QueryGenerator.Builder getGenerator(OptionSet options) {
         register("insert", Generators.CASSANDRA_INSERTER);
         register("insert_prepared", Generators.CASSANDRA_PREPARED_INSERTER);
 
-        if (args.length < 1) {
-            System.err.println("Missing argument, you must at least provide the action to do");
+        List<?> args = options.nonOptionArguments();
+        if (args.isEmpty()) {
+            System.err.println("Missing generator, you need to provide a generator.");
             printHelp(parser, generators.keySet());
             System.exit(1);
         }
 
-        String action = args[0];
+        if (args.size() > 1) {
+            System.err.println("Too many generators provided. Got " + args + " but only one generator supported.");
+            printHelp(parser, generators.keySet());
+            System.exit(1);
+        }
+
+        String action = (String)args.get(0);
         if (!generators.containsKey(action)) {
             System.err.println(String.format("Unknown generator '%s'", action));
             printHelp(parser, generators.keySet());
             System.exit(1);
         }
 
-        String[] opts = new String[args.length - 1];
-        System.arraycopy(args, 1, opts, 0, opts.length);
+        return generators.get(action);
+    }
 
-        OptionSet options = null;
-        try {
-            options = parser.parse(opts);
-        } catch (Exception e) {
-            System.err.println("Error parsing options: " + e.getMessage());
-            printHelp(parser, generators.keySet());
-            System.exit(1);
-        }
+    public static void main(String[] args) throws Exception {
 
-        int iterations = (Integer)options.valueOf("n");
-        int threads = (Integer)options.valueOf("t");
+        OptionSet options = parseOptions(args);
+        QueryGenerator.Builder genBuilder = getGenerator(options);
 
-        QueryGenerator generator = generators.get(action).create(iterations, options);
+        int requests = options.has("n") ? (Integer)options.valueOf("n") : -1;
+        int concurrency = (Integer)options.valueOf("t");
 
-        boolean async = false;
+        boolean async = options.has("async");
         boolean useCsv = options.has("csv");
 
-        BlockingQueue<QueryGenerator.Request> workQueue = new SynchronousQueue<QueryGenerator.Request>(true);
+        System.out.println("Initializing stress test...");
+        System.out.println("request count: " + (requests == -1 ? "unlimited" : requests));
+        System.out.println("concurrency: " + concurrency);
+        System.out.println("mode: " + (async ? "asynchronous" : "blocking"));
 
         try {
             // Create session to hosts
             Cluster cluster = new Cluster.Builder().addContactPoints(String.valueOf(options.valueOf("ip"))).build();
 
-            //PoolingOptions pools = cluster.getConfiguration().getConnectionsConfiguration().getPoolingOptions();
-            //pools.setCoreConnectionsPerHost(HostDistance.LOCAL, 2);
-            //pools.setMaxConnectionsPerHost(HostDistance.LOCAL, 2);
+            final int maxRequestsPerConnection = 128;
+            int maxConnections = concurrency / maxRequestsPerConnection + 1;
+
+            PoolingOptions pools = cluster.getConfiguration().getPoolingOptions();
+            pools.setMaxSimultaneousRequestsPerConnectionThreshold(HostDistance.LOCAL, concurrency);
+            pools.setCoreConnectionsPerHost(HostDistance.LOCAL, maxConnections);
+            pools.setMaxConnectionsPerHost(HostDistance.LOCAL, maxConnections);
+            pools.setCoreConnectionsPerHost(HostDistance.REMOTE, maxConnections);
+            pools.setMaxConnectionsPerHost(HostDistance.REMOTE, maxConnections);
 
             Session session = cluster.connect();
 
@@ -114,31 +146,25 @@ public class Stress {
             System.out.println(String.format("Connected to cluster '%s' on %s.", metadata.getClusterName(), metadata.getAllHosts()));
 
             System.out.println("Creating schema...");
-            generator.createSchema(session);
+            genBuilder.createSchema(options, session);
 
             Reporter reporter = new Reporter(useCsv);
-            Producer producer = new Producer(generator, workQueue);
 
-            Consumer[] consumers = new Consumer[threads];
-            Consumer.Asynchronous.ResultHandler resultHandler = async ? new Consumer.Asynchronous.ResultHandler() : null;
-            for (int i = 0; i < threads; i++) {
-                consumers[i] = async
-                             ? new Consumer.Asynchronous(session, workQueue, reporter, resultHandler)
-                             : new Consumer(session, workQueue, reporter);
+            Consumer[] consumers = new Consumer[concurrency];
+            for (int i = 0; i < concurrency; i++) {
+                int iterations = (requests  == -1 ? -1 : requests / concurrency);
+                QueryGenerator generator = genBuilder.create(i, iterations, options, session);
+                consumers[i] = async ? new AsynchronousConsumer(session, generator, reporter) :
+                                       new BlockingConsumer(session, generator, reporter);
             }
 
             System.out.println("Starting to stress test...");
-            producer.start();
-            if (resultHandler != null)
-                resultHandler.start();
+
             for (Consumer consumer : consumers)
                 consumer.start();
 
-            producer.join();
             for (Consumer consumer : consumers)
                 consumer.join();
-            if (resultHandler != null)
-                resultHandler.join();
 
             System.out.println("Stress test successful.");
             System.exit(0);

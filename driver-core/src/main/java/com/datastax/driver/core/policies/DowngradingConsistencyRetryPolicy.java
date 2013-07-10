@@ -28,7 +28,7 @@ import com.datastax.driver.core.*;
  * <b>may not</b> see a preceding write at {@code QUORUM}. Do not use this
  * policy unless you have understood the cases where this can happen and
  * are ok with that. It is also highly recommended to always wrap this
- * policy into {@link LoggingRetryPolicy} to log the occurences of
+ * policy into {@link LoggingRetryPolicy} to log the occurrences of
  * such consistency break.
  * <p>
  * This policy implements the same retries than the {@link DefaultRetryPolicy}
@@ -36,21 +36,21 @@ import com.datastax.driver.core.*;
  * <ul>
  *   <li>On a read timeout: if the number of replica that responded is
  *   greater than one but lower than is required by the requested
- *   consistency level, the operation is retried at a lower concistency
+ *   consistency level, the operation is retried at a lower consistency
  *   level.</li>
  *   <li>On a write timeout: if the operation is an {@code
- *   WriteType.UNLOGGED_BATCH} and at least one replica acknowleged the
+ *   WriteType.UNLOGGED_BATCH} and at least one replica acknowledged the
  *   write, the operation is retried at a lower consistency level.
- *   Furthermore, for other operation, if at least one replica acknowleged
+ *   Furthermore, for other operation, if at least one replica acknowledged
  *   the write, the timeout is ignored.</li>
  *   <li>On an unavailable exception: if at least one replica is alive, the
  *   operation is retried at a lower consistency level.</li>
  * </ul>
  * <p>
- * The reasoning behing this retry policy is the following one. If, based
+ * The reasoning being this retry policy is the following one. If, based
  * on the information the Cassandra coordinator node returns, retrying the
- * operation with the initally requested consistency has a change to
- * succeed, do it. Otherwise, if based on these informations we know <b>the
+ * operation with the initially requested consistency has a change to
+ * succeed, do it. Otherwise, if based on these information we know <b>the
  * initially requested consistency level cannot be achieve currently</b>, then:
  * <ul>
  *   <li>For writes, ignore the exception (thus silently failing the
@@ -85,7 +85,7 @@ public class DowngradingConsistencyRetryPolicy implements RetryPolicy {
      * Defines whether to retry and at which consistency level on a read timeout.
      * <p>
      * This method triggers a maximum of one retry. If less replica
-     * responsed than required by the consistency level (but at least one
+     * responded than required by the consistency level (but at least one
      * replica did respond), the operation is retried at a lower
      * consistency level. If enough replica responded but data was not
      * retrieve, the operation is retried with the initial consistency
@@ -102,6 +102,7 @@ public class DowngradingConsistencyRetryPolicy implements RetryPolicy {
      * @param nbRetry the number of retry already performed for this operation.
      * @return a RetryDecision as defined above.
      */
+    @Override
     public RetryDecision onReadTimeout(Query query, ConsistencyLevel cl, int requiredResponses, int receivedResponses, boolean dataRetrieved, int nbRetry) {
         if (nbRetry != 0)
             return RetryDecision.rethrow();
@@ -120,7 +121,7 @@ public class DowngradingConsistencyRetryPolicy implements RetryPolicy {
      * This method triggers a maximum of one retry. If {@code writeType ==
      * WriteType.BATCH_LOG}, the write is retried with the initial
      * consistency level. If {@code writeType == WriteType.UNLOGGED_BATCH}
-     * and at least one replica acknowleged, the write is retried with a
+     * and at least one replica acknowledged, the write is retried with a
      * lower consistency level (with unlogged batch, a write timeout can
      * <b>always</b> mean that part of the batch haven't been persisted at
      * all, even if {@code receivedAcks > 0}). For other {@code writeType},
@@ -137,6 +138,7 @@ public class DowngradingConsistencyRetryPolicy implements RetryPolicy {
      * @param nbRetry the number of retry already performed for this operation.
      * @return a RetryDecision as defined above.
      */
+    @Override
     public RetryDecision onWriteTimeout(Query query, ConsistencyLevel cl, WriteType writeType, int requiredAcks, int receivedAcks, int nbRetry) {
         if (nbRetry != 0)
             return RetryDecision.rethrow();
@@ -177,6 +179,7 @@ public class DowngradingConsistencyRetryPolicy implements RetryPolicy {
      * @param nbRetry the number of retry already performed for this operation.
      * @return a RetryDecision as defined above.
      */
+    @Override
     public RetryDecision onUnavailable(Query query, ConsistencyLevel cl, int requiredReplica, int aliveReplica, int nbRetry) {
         if (nbRetry != 0)
             return RetryDecision.rethrow();

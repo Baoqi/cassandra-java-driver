@@ -23,13 +23,20 @@ import com.datastax.driver.core.WriteType;
  */
 public class WriteTimeoutException extends QueryTimeoutException {
 
+    private static final long serialVersionUID = 0;
+
     private final WriteType writeType;
 
     public WriteTimeoutException(ConsistencyLevel consistency, WriteType writeType, int received, int required) {
-        super(String.format("Cassandra timeout during write query at consitency %s (%d replica acknowledged the write over %d required)", consistency, received, required),
+        super(String.format("Cassandra timeout during write query at consistency %s (%d replica were required but only %d acknowledged the write)", consistency, required, received),
               consistency,
               received,
               required);
+        this.writeType = writeType;
+    }
+
+    private WriteTimeoutException(String msg, Throwable cause, ConsistencyLevel consistency, WriteType writeType, int received, int required) {
+        super(msg, cause, consistency, received, required);
         this.writeType = writeType;
     }
 
@@ -40,5 +47,15 @@ public class WriteTimeoutException extends QueryTimeoutException {
      */
     public WriteType getWriteType() {
         return writeType;
+    }
+
+    @Override
+    public DriverException copy() {
+        return new WriteTimeoutException(getMessage(),
+                                         this,
+                                         getConsistencyLevel(),
+                                         getWriteType(),
+                                         getReceivedAcknowledgements(),
+                                         getRequiredAcknowledgements());
     }
 }

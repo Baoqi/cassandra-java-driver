@@ -28,7 +28,7 @@ public class Insert extends BuiltStatement {
 
     private final String keyspace;
     private final String table;
-    private final List<String> names = new ArrayList<String>();
+    private final List<Object> names = new ArrayList<Object>();
     private final List<Object> values = new ArrayList<Object>();
     private final Options usings;
 
@@ -46,6 +46,7 @@ public class Insert extends BuiltStatement {
         this.usings = new Options(this);
     }
 
+    @Override
     protected String buildQueryString() {
         StringBuilder builder = new StringBuilder();
 

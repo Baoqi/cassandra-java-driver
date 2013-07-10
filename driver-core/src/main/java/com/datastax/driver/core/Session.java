@@ -20,6 +20,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.Uninterruptibles;
 
 import com.datastax.driver.core.exceptions.*;
@@ -32,11 +33,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * A session holds connections to a Cassandra cluster, allowing to query it.
+ * A session holds connections to a Cassandra cluster, allowing it to be queried.
  *
- * Each session will maintain multiple connections to the cluster nodes, and
+ * Each session maintains multiple connections to the cluster nodes,
  * provides policies to choose which node to use for each query (round-robin on
- * all nodes of the cluster by default), handles retries for failed query (when
+ * all nodes of the cluster by default), and handles retries for failed query (when
  * it makes sense), etc...
  * <p>
  * Session instances are thread-safe and usually a single instance is enough
@@ -55,9 +56,9 @@ public class Session {
     }
 
     /**
-     * Execute the provided query.
+     * Executes the provided query.
      *
-     * This method is a shortcut for {@code execute(new SimpleStatement(query))}.
+     * This is a convenience method for {@code execute(new SimpleStatement(query))}.
      *
      * @param query the CQL query to execute.
      * @return the result of the query. That result will never be null but can
@@ -76,7 +77,7 @@ public class Session {
     }
 
     /**
-     * Execute the provided query.
+     * Executes the provided query.
      *
      * This method blocks until at least some result has been received from the
      * database. However, for SELECT queries, it does not guarantee that the
@@ -107,9 +108,9 @@ public class Session {
     }
 
     /**
-     * Execute the provided query asynchronously.
+     * Executes the provided query asynchronously.
      *
-     * This method is a shortcut for {@code executeAsync(new SimpleStatement(query))}.
+     * This is a convenience method for {@code executeAsync(new SimpleStatement(query))}.
      *
      * @param query the CQL query to execute.
      * @return a future on the result of the query.
@@ -119,17 +120,17 @@ public class Session {
     }
 
     /**
-     * Execute the provided query asynchronously.
+     * Executes the provided query asynchronously.
      *
      * This method does not block. It returns as soon as the query has been
-     * successfully sent to a Cassandra node. In particular, returning from
-     * this method does not guarantee that the query is valid. Any exception
-     * pertaining to the failure of the query will be thrown by the first
-     * access to the {@link ResultSet}.
+     * passed to the underlying network stack. In particular, returning from
+     * this method does not guarantee that the query is valid or has even been
+     * submitted to a live node. Any exception pertaining to the failure of the
+     * query will be thrown when accessing the {@link ResultSetFuture}.
      *
      * Note that for queries that doesn't return a result (INSERT, UPDATE and
-     * DELETE), you will need to access the ResultSet (i.e. call any of its
-     * method) to make sure the query was successful.
+     * DELETE), you will need to access the ResultSetFuture (that is call one of
+     * its get method to make sure the query was successful.
      *
      * @param query the CQL query to execute (that can be either a {@code
      * Statement} or a {@code BoundStatement}). If it is a {@code
@@ -148,15 +149,12 @@ public class Session {
             assert query instanceof BoundStatement : query;
 
             BoundStatement bs = (BoundStatement)query;
-            if (!bs.isReady())
-                throw new IllegalStateException("Some bind variables haven't been bound in the provided statement");
-
             return manager.executeQuery(new ExecuteMessage(bs.statement.id, Arrays.asList(bs.values), ConsistencyLevel.toCassandraCL(query.getConsistencyLevel())), query);
         }
     }
 
     /**
-     * Prepare the provided query.
+     * Prepares the provided query.
      *
      * @param query the CQL query to prepare
      * @return the prepared statement corresponding to {@code query}.
@@ -171,21 +169,47 @@ public class Session {
     }
 
     /**
-     * Shutdown this session instance.
+     * Shuts down this session instance.
      * <p>
      * This closes all connections used by this sessions. Note that if you want
-     * to shutdown the full {@code Cluster} instance this session is part of,
+     * to shut down the full {@code Cluster} instance this session is part of,
      * you should use {@link Cluster#shutdown} instead (which will call this
-     * method for all session but also release some additional ressources).
+     * method for all session but also release some additional resources).
      * <p>
      * This method has no effect if the session was already shutdown.
      */
     public void shutdown() {
-        manager.shutdown();
+        shutdown(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
     }
 
     /**
-     * The {@code Cluster} object this session is part of.
+     * Shutdown this session instance, only waiting a definite amount of time.
+     * <p>
+     * This closes all connections used by this sessions. Note that if you want
+     * to shutdown the full {@code Cluster} instance this session is part of,
+     * you should use {@link Cluster#shutdown} instead (which will call this
+     * method for all session but also release some additional resources).
+     * <p>
+     * Note that this method is not thread safe in the sense that if another
+     * shutdown is perform in parallel, it might return {@code true} even if
+     * the instance is not yet fully shutdown.
+     *
+     * @param timeout how long to wait for the session to shutdown.
+     * @param unit the unit for the timeout.
+     * @return {@code true} if the session has been properly shutdown within
+     * the {@code timeout}, {@code false} otherwise.
+     */
+    public boolean shutdown(long timeout, TimeUnit unit) {
+        try {
+            return manager.shutdown(timeout, unit);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /**
+     * Returns the {@code Cluster} object this session is part of.
      *
      * @return the {@code Cluster} object this session is part of.
      */
@@ -203,15 +227,16 @@ public class Session {
                     switch (rm.kind) {
                         case PREPARED:
                             ResultMessage.Prepared pmsg = (ResultMessage.Prepared)rm;
+                            PreparedStatement stmt = PreparedStatement.fromMessage(pmsg, manager.cluster.getMetadata(), query, manager.poolsState.keyspace);
                             try {
-                                manager.cluster.manager.prepare(pmsg.statementId, manager.poolsState.keyspace, query, future.getAddress());
+                                manager.cluster.manager.prepare(pmsg.statementId, stmt, future.getAddress());
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
-                                // This method don't propage interruption, at least not for now. However, if we've
+                                // This method doesn't propagate interruption, at least not for now. However, if we've
                                 // interrupted preparing queries on other node it's not a problem as we'll re-prepare
                                 // later if need be. So just ignore.
                             }
-                            return PreparedStatement.fromMessage(pmsg, manager.cluster.getMetadata());
+                            return stmt;
                         default:
                             throw new DriverInternalError(String.format("%s response received when prepared statement was expected", rm.kind));
                     }
@@ -233,11 +258,35 @@ public class Session {
         final Cluster cluster;
 
         final ConcurrentMap<Host, HostConnectionPool> pools;
-        final LoadBalancingPolicy loadBalancer;
 
         final HostConnectionPool.PoolState poolsState;
 
         final AtomicBoolean isShutdown = new AtomicBoolean(false);
+
+        public Manager(Cluster cluster, Collection<Host> hosts) {
+            this.cluster = cluster;
+
+            this.pools = new ConcurrentHashMap<Host, HostConnectionPool>(hosts.size());
+            this.poolsState = new HostConnectionPool.PoolState();
+
+            // Create pool to initial nodes (and wait for them to be created)
+            for (Host host : hosts)
+            {
+                try
+                {
+                    addOrRenewPool(host).get();
+                }
+                catch (ExecutionException e)
+                {
+                    // This is not supposed to happen
+                    throw new DriverInternalError(e);
+                }
+                catch (InterruptedException e)
+                {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
 
         public Connection.Factory connectionFactory() {
             return cluster.manager.connectionFactory;
@@ -247,99 +296,111 @@ public class Session {
             return cluster.manager.configuration;
         }
 
+        LoadBalancingPolicy loadBalancingPolicy() {
+            return cluster.manager.loadBalancingPolicy();
+        }
+
+        ReconnectionPolicy reconnectionPolicy() {
+            return cluster.manager.reconnectionPolicy();
+        }
+
         public ExecutorService executor() {
             return cluster.manager.executor;
         }
 
-        public Manager(Cluster cluster, Collection<Host> hosts) {
-            this.cluster = cluster;
-
-            this.pools = new ConcurrentHashMap<Host, HostConnectionPool>(hosts.size());
-            this.loadBalancer = cluster.manager.configuration.getPolicies().getLoadBalancingPolicy();
-            this.poolsState = new HostConnectionPool.PoolState();
-
-            for (Host host : hosts)
-                addHost(host);
-        }
-
-        private void shutdown() {
+        private boolean shutdown(long timeout, TimeUnit unit) throws InterruptedException {
 
             if (!isShutdown.compareAndSet(false, true))
-                return;
+                return true;
 
+            long start = System.nanoTime();
+            boolean success = true;
             for (HostConnectionPool pool : pools.values())
-                pool.shutdown();
+                success &= pool.shutdown(timeout - Cluster.timeSince(start, unit), unit);
+            return success;
         }
 
-        private HostConnectionPool addHost(Host host) {
-            try {
-                HostDistance distance = loadBalancer.distance(host);
-                if (distance == HostDistance.IGNORED) {
-                    return pools.get(host);
-                } else {
+        private Future<?> addOrRenewPool(final Host host) {
+            final HostDistance distance = cluster.manager.loadBalancingPolicy().distance(host);
+            if (distance == HostDistance.IGNORED)
+                return Futures.immediateFuture(null);
+
+            // Creating a pool is somewhat long since it has to create the connection, so do it asynchronously.
+            return executor().submit(new Runnable() {
+                public void run() {
                     logger.debug("Adding {} to list of queried hosts", host);
-                    return pools.put(host, new HostConnectionPool(host, distance, this));
+                    try {
+                        HostConnectionPool previous = pools.put(host, new HostConnectionPool(host, distance, Session.Manager.this));
+                        if (previous != null)
+                            previous.shutdown(); // The previous was probably already shutdown but that's ok
+                    } catch (AuthenticationException e) {
+                        logger.error("Error creating pool to {} ({})", host, e.getMessage());
+                        host.getMonitor().signalConnectionFailure(new ConnectionException(e.getHost(), e.getMessage()));
+                    } catch (ConnectionException e) {
+                        logger.debug("Error creating pool to {} ({})", host, e.getMessage());
+                        host.getMonitor().signalConnectionFailure(e);
+                    }
                 }
-            } catch (AuthenticationException e) {
-                logger.error("Error creating pool to {} ({})", host, e.getMessage());
-                host.getMonitor().signalConnectionFailure(new ConnectionException(e.getHost(), e.getMessage()));
-                return pools.get(host);
-            } catch (ConnectionException e) {
-                logger.debug("Error creating pool to {} ({})", host, e.getMessage());
-                host.getMonitor().signalConnectionFailure(e);
-                return pools.get(host);
-            }
+            });
         }
 
-        public void onUp(Host host) {
-            HostConnectionPool previous = addHost(host);;
-            loadBalancer.onUp(host);
-
-            // This should not be necessary but it's harmless
-            if (previous != null)
-                previous.shutdown();
-        }
-
-        public void onDown(Host host) {
-            loadBalancer.onDown(host);
+        private void removePool(Host host) {
             HostConnectionPool pool = pools.remove(host);
-
-            // This should not be necessary but it's harmless
             if (pool != null)
                 pool.shutdown();
+        }
 
-            // If we've remove a host, the loadBalancer is allowed to change his mind on host distances.
+        /*
+         * When the set of live nodes change, the loadbalancer will change his
+         * mind on host distances. It might change it on the node that came/left
+         * but also on other nodes (for instance, if a node dies, another
+         * previously ignored node may be now considered).
+         *
+         * This method ensures that all hosts for which a pool should exist
+         * have one, and hosts that shouldn't don't.
+         */
+        private void updateCreatedPools() {
             for (Host h : cluster.getMetadata().allHosts()) {
-                if (!h.getMonitor().isUp())
-                    continue;
+                HostDistance dist = loadBalancingPolicy().distance(h);
+                HostConnectionPool pool = pools.get(h);
 
-                HostDistance dist = loadBalancer.distance(h);
-                if (dist != HostDistance.IGNORED) {
-                    HostConnectionPool p = pools.get(h);
-                    if (p == null)
-                        addHost(host);
-                    else
-                        p.hostDistance = dist;
+                if (pool == null) {
+                    if (dist != HostDistance.IGNORED && h.getMonitor().isUp())
+                        addOrRenewPool(h);
+                } else if (dist != pool.hostDistance) {
+                    if (dist == HostDistance.IGNORED) {
+                        removePool(h);
+                    } else {
+                        pool.hostDistance = dist;
+                    }
                 }
             }
         }
 
-        public void onAdd(Host host) {
-            HostConnectionPool previous = addHost(host);;
-            loadBalancer.onAdd(host);
-
-            // This should not be necessary, especially since the host is
-            // supposed to be new, but it's safer to make that work correctly
-            // if the even is triggered multiple times.
-            if (previous != null)
-                previous.shutdown();
+        @Override
+        public void onUp(Host host) {
+            addOrRenewPool(host);
+            updateCreatedPools();
         }
 
+        @Override
+        public void onDown(Host host) {
+            // Note that with well behaved balancing policy (that ignore dead nodes), the removePool call is not necessary
+            // since updateCreatedPools should take care of it. But better protect against non well behaving policies.
+            removePool(host);
+            updateCreatedPools();
+        }
+
+        @Override
+        public void onAdd(Host host) {
+            addOrRenewPool(host);
+            updateCreatedPools();
+        }
+
+        @Override
         public void onRemove(Host host) {
-            loadBalancer.onRemove(host);
-            HostConnectionPool pool = pools.remove(host);
-            if (pool != null)
-                pool.shutdown();
+            removePool(host);
+            updateCreatedPools();
         }
 
         public void setKeyspace(String keyspace) {
@@ -356,8 +417,8 @@ public class Session {
          * This method will find a suitable node to connect to using the
          * {@link LoadBalancingPolicy} and handle host failover.
          */
-        public void execute(Connection.ResponseCallback callback, Query query) {
-            new RetryingCallback(this, callback, query).sendRequest();
+        public void execute(RequestHandler.Callback callback, Query query) {
+            new RequestHandler(this, callback, query).sendRequest();
         }
 
         public void prepare(String query, InetAddress toExclude) throws InterruptedException {

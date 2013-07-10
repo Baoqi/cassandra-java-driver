@@ -28,6 +28,7 @@ abstract class BuiltStatement extends Statement {
     private final ByteBuffer[] routingKey;
     private boolean dirty;
     private String cache;
+    protected Boolean isCounterOp;
 
     protected BuiltStatement() {
         this.partitionKey = null;
@@ -39,6 +40,7 @@ abstract class BuiltStatement extends Statement {
         this.routingKey = new ByteBuffer[tableMetadata.getPartitionKey().size()];
     }
 
+    @Override
     public String getQueryString() {
         if (dirty || cache == null) {
             cache = buildQueryString().trim();
@@ -54,19 +56,28 @@ abstract class BuiltStatement extends Statement {
         dirty = true;
     }
 
+    protected boolean isCounterOp() {
+        return isCounterOp == null ? false : isCounterOp;
+    }
+
+    protected void setCounterOp(boolean isCounterOp) {
+        this.isCounterOp = isCounterOp;
+    }
+
     // TODO: Correctly document the InvalidTypeException
     void maybeAddRoutingKey(String name, Object value) {
-        if (routingKey == null || name == null)
+        if (routingKey == null || name == null || value == QueryBuilder.BIND_MARKER)
             return;
 
         for (int i = 0; i < partitionKey.size(); i++) {
-            if (name.equals(partitionKey.get(i).getName())) {
+            if (name.equals(partitionKey.get(i).getName()) && Utils.isRawValue(value)) {
                 routingKey[i] = partitionKey.get(i).getType().parse(Utils.toRawString(value));
                 return;
             }
         }
     }
 
+    @Override
     public ByteBuffer getRoutingKey() {
         if (routingKey == null)
             return null;
@@ -87,8 +98,9 @@ abstract class BuiltStatement extends Statement {
             totalLength += 2 + bb.remaining() + 1;
 
         ByteBuffer out = ByteBuffer.allocate(totalLength);
-        for (ByteBuffer bb : buffers)
+        for (ByteBuffer buffer : buffers)
         {
+            ByteBuffer bb = buffer.duplicate();
             putShortLength(out, bb.remaining());
             out.put(bb);
             out.put((byte) 0);
@@ -118,6 +130,7 @@ abstract class BuiltStatement extends Statement {
             return statement.getQueryString();
         }
 
+        @Override
         protected String buildQueryString() {
             throw new UnsupportedOperationException();
         }
@@ -131,5 +144,11 @@ abstract class BuiltStatement extends Statement {
         protected void setDirty() {
             statement.setDirty();
         }
+
+        @Override
+        protected boolean isCounterOp() {
+            return statement.isCounterOp();
+        }
+
     }
 }

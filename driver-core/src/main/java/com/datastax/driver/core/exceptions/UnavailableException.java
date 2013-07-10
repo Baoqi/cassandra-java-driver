@@ -23,12 +23,21 @@ import com.datastax.driver.core.ConsistencyLevel;
  */
 public class UnavailableException extends QueryExecutionException {
 
+    private static final long serialVersionUID = 0;
+
     private final ConsistencyLevel consistency;
     private final int required;
     private final int alive;
 
     public UnavailableException(ConsistencyLevel consistency, int required, int alive) {
         super(String.format("Not enough replica available for query at consistency %s (%d required but only %d alive)", consistency, required, alive));
+        this.consistency = consistency;
+        this.required = required;
+        this.alive = alive;
+    }
+
+    private UnavailableException(String message, Throwable cause, ConsistencyLevel consistency, int required, int alive) {
+        super(message, cause);
         this.consistency = consistency;
         this.required = required;
         this.alive = alive;
@@ -63,5 +72,10 @@ public class UnavailableException extends QueryExecutionException {
      */
     public int getAliveReplicas() {
         return alive;
+    }
+
+    @Override
+    public DriverException copy() {
+        return new UnavailableException(getMessage(), this, consistency, required, alive);
     }
 }

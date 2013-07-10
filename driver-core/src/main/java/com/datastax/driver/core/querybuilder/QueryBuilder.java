@@ -41,6 +41,8 @@ import com.datastax.driver.core.TableMetadata;
  */
 public final class QueryBuilder {
 
+    static final Object BIND_MARKER = new Object() {};
+
     private QueryBuilder() {}
 
     /**
@@ -53,7 +55,7 @@ public final class QueryBuilder {
      * least a FROM clause to complete the query).
      */
     public static Select.Builder select(String... columns) {
-        return new Select.Builder(Arrays.asList(columns));
+        return new Select.Builder(Arrays.asList((Object[])columns));
     }
 
     /**
@@ -139,7 +141,7 @@ public final class QueryBuilder {
      * clause needs to be provided to complete the query).
      */
     public static Delete.Builder delete(String... columns) {
-        return new Delete.Builder(Arrays.asList(columns));
+        return new Delete.Builder(Arrays.asList((Object[])columns));
     }
 
     /**
@@ -154,13 +156,41 @@ public final class QueryBuilder {
     }
 
     /**
-     * Built a new BATCH query on the provided statement.
+     * Built a new BATCH query on the provided statements.
+     * <p>
+     * This method will build a logged batch (this is the default in CQL3). To
+     * create unlogged batches, use {@link #unloggedBatch}. Also note that
+     * for convenience, if the provided statements are counter statements, this
+     * method will create a COUNTER batch even though COUNTER batches are never
+     * logged (so for counters, using this method is effectively equivalent to
+     * using {@link #unloggedBatch}).
      *
      * @param statements the statements to batch.
      * @return a new {@code Statement} that batch {@code statements}.
      */
     public static Batch batch(Statement... statements) {
-        return new Batch(statements);
+        return new Batch(statements, true);
+    }
+
+    /**
+     * Built a new UNLOGGED BATCH query on the provided statements.
+     * <p>
+     * Compared to logged batches (the default), unlogged batch don't
+     * use the distributed batch log server side and as such are not
+     * guaranteed to be atomic. In other words, if an unlogged batch
+     * timeout, some of the batched statements may have been persisted
+     * while some have not. Unlogged batch will however be slightly
+     * faster than logged batch.
+     * <p>
+     * If the statements added to the batch are counter statements, the
+     * resulting batch will be a COUNTER one.
+     *
+     * @param statements the statements to batch.
+     * @return a new {@code Statement} that batch {@code statements} without
+     * using the batch log.
+     */
+    public static Batch unloggedBatch(Statement... statements) {
+        return new Batch(statements, false);
     }
 
     /**
@@ -197,12 +227,12 @@ public final class QueryBuilder {
      * This variant is most useful when the partition key is composite.
      *
      * @param columnNames the column names to take the token of.
-     * @return a string reprensenting the token of the provided column names.
+     * @return a string representing the token of the provided column names.
      */
     public static String token(String... columnNames) {
         StringBuilder sb = new StringBuilder();
         sb.append("token(");
-        Utils.joinAndAppendNames(sb, ",", Arrays.asList(columnNames));
+        Utils.joinAndAppendNames(sb, ",", Arrays.asList((Object[])columnNames));
         sb.append(")");
         return sb.toString();
     }
@@ -330,7 +360,7 @@ public final class QueryBuilder {
     }
 
     /**
-     * Simple "set" assignement of a value to a column.
+     * Simple "set" assignment of a value to a column.
      * <p>
      * This will generate: {@code name = value}.
      *
@@ -551,7 +581,7 @@ public final class QueryBuilder {
     }
 
     /**
-     * Puts a map of new key/value paris to a map column.
+     * Puts a map of new key/value pairs to a map column.
      * <p>
      * This will generate: {@code name = name + map}.
      *
@@ -561,5 +591,72 @@ public final class QueryBuilder {
      */
     public static Assignment putAll(String name, Map<?, ?> map) {
         return new Assignment.CollectionAssignment(name, map, true);
+    }
+
+    /**
+     * An object representing a bind marker (a question mark).
+     * <p>
+     * This can be used wherever a value is expected. For instance, one can do:
+     * <pre>
+     * {@code
+     *     Insert i = QueryBuilder.insertInto("test").value("k", 0)
+     *                                               .value("c", QueryBuilder.bindMarker());
+     *     PreparedState p = session.prepare(i.toString());
+     * }
+     * </pre>
+     *
+     * @return an object representing a bind marker.
+     */
+    public static Object bindMarker() {
+        return BIND_MARKER;
+    }
+
+    /**
+     * Creates a raw string value.
+     *
+     * This allows inputing a string value that is not interpreted/escapted by
+     * the query builder in any way. By default, the query builder escape
+     * single quotes and recognize function calls in string values. This
+     * function avoid both of those behavior.
+     * <p>
+     * The following table exemplify the behavior of this function:
+     * <table border=1>
+     *   <tr><th>Code</th><th>Resulting query string</th></tr>
+     *   <tr><td>{@code select().from("t").where(eq("c", "C'est la vie!")); }</td><td>{@code "SELECT * FROM t WHERE c='C''est la vie!';"}</td></tr>
+     *   <tr><td>{@code select().from("t").where(eq("c", raw("C'est la vie!"))); }</td><td>{@code "SELECT * FROM t WHERE c='C'est la vie!';"}</td></tr>
+     *   <tr><td>{@code select().from("t").where(eq("c", "now()")); }</td><td>{@code "SELECT * FROM t WHERE c=now();"}</td></tr>
+     *   <tr><td>{@code select().from("t").where(eq("c", raw("now()"))); }</td><td>{@code "SELECT * FROM t WHERE c='now()';"}</td></tr>
+     * </table>
+     * <i>Note: the 2nd example in this table is not a valid CQL3 query as the quote is not correctly escaped.</i>
+     *
+     * @param str the string value to use
+     * @return the value but protected from being interpreted/escaped by the query builder.
+     */
+    public static Object raw(String str) {
+        return new Utils.RawString("'" + str + "'");
+    }
+
+    /**
+     * Creates a function call.
+     *
+     * @param name the name of the function to call.
+     * @param parameters the paramters for the function.
+     * @return the function call.
+     */
+    public static Object fcall(String name, Object... parameters) {
+        return new Utils.FCall(name, parameters);
+    }
+
+    /**
+     * Declares that the name in argument should be treated as a column name.
+     * <p>
+     * This mainly meant for use with {@link Select.Builder#fcall} when a
+     * function should apply to a column name, not a string value.
+     *
+     * @param name the name of the column.
+     * @return the name as a column name.
+     */
+    public static Object column(String name) {
+        return new Utils.CName(name);
     }
 }

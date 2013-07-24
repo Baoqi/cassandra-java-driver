@@ -134,7 +134,7 @@ class ControlConnection implements Host.StateListener {
             // Host might be null in the case the host has been removed, but it means this has
             // been reported already so it's fine.
             if (host != null) {
-                host.getMonitor().signalConnectionFailure(connection.lastException());
+                cluster.signalConnectionFailure(host, connection.lastException());
                 return;
             }
         }
@@ -168,7 +168,7 @@ class ControlConnection implements Host.StateListener {
                     return tryConnect(host);
                 } catch (ConnectionException e) {
                     errors = logError(host, e.getMessage(), errors, iter);
-                    host.getMonitor().signalConnectionFailure(e);
+                    cluster.signalConnectionFailure(host, e);
                 } catch (ExecutionException e) {
                     errors = logError(host, e.getMessage(), errors, iter);
                 }
@@ -232,7 +232,9 @@ class ControlConnection implements Host.StateListener {
             logger.debug("[Control connection] Connection error while refeshing schema ({})", e.getMessage());
             signalError();
         } catch (ExecutionException e) {
-            logger.error("[Control connection] Unexpected error while refeshing schema", e);
+            // If we're being shutdown during schema refresh, this can happen. That's fine so don't scare the user.
+            if (!isShutdown)
+                logger.error("[Control connection] Unexpected error while refeshing schema", e);
             signalError();
         } catch (BusyConnectionException e) {
             logger.debug("[Control connection] Connection is busy, reconnecting");
@@ -276,7 +278,9 @@ class ControlConnection implements Host.StateListener {
             logger.debug("[Control connection] Connection error while refeshing node list and token map ({})", e.getMessage());
             signalError();
         } catch (ExecutionException e) {
-            logger.error("[Control connection] Unexpected error while refeshing node list and token map", e);
+            // If we're being shutdown during refresh, this can happen. That's fine so don't scare the user.
+            if (!isShutdown)
+                logger.error("[Control connection] Unexpected error while refeshing node list and token map", e);
             signalError();
         } catch (BusyConnectionException e) {
             logger.debug("[Control connection] Connection is busy, reconnecting");
@@ -403,7 +407,7 @@ class ControlConnection implements Host.StateListener {
                     rpc = row.getInet("peer");
 
                 Host peer = metadata.getHost(rpc);
-                if (peer != null && peer.getMonitor().isUp())
+                if (peer != null && peer.isUp())
                     versions.add(row.getUUID("schema_version"));
             }
 

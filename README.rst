@@ -18,6 +18,7 @@ relatively low-level API on top of which higher level layer can be built.
 
 The driver contains the following modules:
  - driver-core: the core layer.
+ - driver-mapper: a simple object-to-Cassandra mapper.
  - driver-examples: example applications using the other modules which are
    only meant for demonstration purposes.
 
